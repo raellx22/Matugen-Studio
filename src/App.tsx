@@ -10,7 +10,14 @@ import Templates from "./pages/Templates";
 import Source from "./pages/Source";
 import Presets from "./pages/Presets";
 import KdeIntegration from "./pages/KdeIntegration";
+import {
+  DEFAULT_WALLPAPERS_PER_PAGE,
+  WALLPAPERS_PER_PAGE_OPTIONS,
+  validateWallpapersPerPage,
+} from "./utils/wallpaperPagination";
 import "./App.css";
+
+const WALLPAPERS_PER_PAGE_STORAGE_KEY = "wallpapersPerPage";
 
 function App() {
   const [activeTab, setActiveTab] = useState("colors");
@@ -19,10 +26,23 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [schemeType, setSchemeType] = useState("Content");
+  const [mode, setMode] = useState<"dark" | "light" | "system">("dark");
   const [selectedColor, setSelectedColor] = useState<{name: string, path: string, hex: string, originalHex: string} | null>(null);
   const [showPicker, setShowPicker] = useState(false);
   const [pickerHsva, setPickerHsva] = useState({ h: 0, s: 0, v: 0, a: 1 });
   const [copied, setCopied] = useState(false);
+  const [wallpapersPerPage, setWallpapersPerPage] = useState(() => {
+    const saved = localStorage.getItem(WALLPAPERS_PER_PAGE_STORAGE_KEY);
+    const value = validateWallpapersPerPage(saved ?? DEFAULT_WALLPAPERS_PER_PAGE);
+    localStorage.setItem(WALLPAPERS_PER_PAGE_STORAGE_KEY, String(value));
+    return value;
+  });
+
+  const handleWallpapersPerPageChange = (value: string) => {
+    const parsed = validateWallpapersPerPage(value);
+    setWallpapersPerPage(parsed);
+    localStorage.setItem(WALLPAPERS_PER_PAGE_STORAGE_KEY, String(parsed));
+  };
 
   const selectImage = async () => {
     try {
@@ -172,20 +192,31 @@ function App() {
     }
   };
 
-  const handleApplyPreset = async (wallpaper: string | null, scheme_type: string, scheme_data: any) => {
+  const handleApplyPreset = async (preset: any) => {
+    const wallpaper = preset.wallpaper?.original_path ?? null;
+    const scheme_data = preset.scheme.scheme_data;
+    const scheme_type = preset.scheme.scheme_type;
+
     setWallpaperPath(wallpaper);
     setSchemeType(scheme_type);
     setSchemeData(scheme_data);
-    
+    setMode((preset.scheme.mode ?? "dark") as "dark" | "light" | "system");
+
+    const desktop = preset.desktop ?? { apply_wallpaper: true, apply_kde_colorscheme: true, apply_templates: true };
+
     try {
-      if (wallpaper) {
+      if (wallpaper && desktop.apply_wallpaper) {
         await invoke("apply_wallpaper", { imagePath: wallpaper, screenIndex: -1 });
       }
-      await invoke("apply_theme", { context: scheme_data });
-      invoke("apply_kde_colorscheme", { context: scheme_data }).catch(e => 
-        console.error("KDE scheme apply failed:", e)
-      );
-      alert("Preset applied globally!");
+      if (desktop.apply_templates) {
+        await invoke("apply_theme", { context: scheme_data });
+      }
+      if (desktop.apply_kde_colorscheme) {
+        invoke("apply_kde_colorscheme", { context: scheme_data }).catch(e =>
+          console.error("KDE scheme apply failed:", e)
+        );
+      }
+      alert("Preset applied!");
     } catch (e) {
       alert("Failed to apply preset: " + e);
     }
@@ -386,16 +417,18 @@ function App() {
       <main className="main-content">
         {activeTab === 'source' && (
           <Source 
+            itemsPerPage={wallpapersPerPage}
             onApplyAndGenerate={handleApplyAndGenerate} 
             onSelectForColors={handleSelectForColors} 
           />
         )}
 
         {activeTab === 'presets' && (
-          <Presets 
+          <Presets
             currentWallpaper={wallpaperPath}
             currentSchemeType={schemeType}
             currentSchemeData={schemeData}
+            currentMode={mode}
             onApplyPreset={handleApplyPreset}
           />
         )}
@@ -405,6 +438,11 @@ function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2>Matugen Studio</h2>
               <div className="controls-row">
+                <select value={mode} onChange={(e) => setMode(e.target.value as "dark" | "light" | "system")}>
+                  <option value="dark">Dark</option>
+                  <option value="light">Light</option>
+                  <option value="system">System</option>
+                </select>
                 <select value={schemeType} onChange={(e) => handleSchemeTypeChange(e.target.value)}>
                   <option>Content</option>
                   <option>Expressive</option>
@@ -552,6 +590,37 @@ function App() {
               }
             }}
           />
+        )}
+
+        {activeTab === 'settings' && (
+          <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24, height: '100%', width: '100%' }}>
+            <div>
+              <h2>Settings</h2>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+                Ajustes locais de desempenho e comportamento do app.
+              </p>
+            </div>
+
+            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div style={{ maxWidth: 620 }}>
+                  <h3 style={{ marginTop: 0 }}>Wallpapers por página</h3>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
+                    Controla quantos wallpapers são carregados por vez nas sources. Valores menores reduzem uso de memória e melhoram desempenho em pastas grandes.
+                  </p>
+                </div>
+                <select
+                  value={wallpapersPerPage}
+                  onChange={(e) => handleWallpapersPerPageChange(e.target.value)}
+                  style={{ minWidth: 120, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                >
+                  {WALLPAPERS_PER_PAGE_OPTIONS.map(option => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>

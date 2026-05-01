@@ -1,27 +1,64 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
-import { FolderOpen, Star, Shuffle, Monitor, Palette } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FolderOpen, Monitor, Palette, Shuffle, Star } from 'lucide-react';
+import { getWallpaperPage } from '../utils/wallpaperPagination';
 
 interface SourceProps {
+  itemsPerPage: number;
   onApplyAndGenerate: (path: string) => Promise<void>;
   onSelectForColors: (path: string) => void;
 }
 
-const Thumbnail = ({ path }: { path: string }) => {
-  const [thumbPath, setThumbPath] = useState<string | null>(null);
+interface ThumbnailProps {
+  imagePath: string;
+  thumbnailPath: string | null;
+  hasError: boolean;
+}
 
-  useEffect(() => {
-    let mounted = true;
-    invoke<string>('generate_thumbnail', { imagePath: path })
-      .then(res => {
-         if (mounted) setThumbPath(res);
-      })
-      .catch(e => console.error(e));
-    return () => { mounted = false; };
-  }, [path]);
+interface CompactPaginationButtonProps {
+  label: string;
+  title: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}
 
-  if (!thumbPath) {
+const THUMBNAIL_CONCURRENCY = 4;
+
+const compactPaginationButtonStyle = (disabled: boolean): CSSProperties => ({
+  height: 36,
+  minWidth: 42,
+  padding: '8px 12px',
+  borderRadius: 999,
+  border: '1px solid var(--border)',
+  background: disabled ? 'rgba(255,255,255,0.03)' : 'var(--surface)',
+  color: disabled ? 'rgba(255,255,255,0.32)' : 'var(--text-primary)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  gap: 6,
+  fontSize: 13,
+  lineHeight: 1,
+  cursor: disabled ? 'not-allowed' : 'pointer',
+  opacity: disabled ? 0.6 : 1,
+});
+
+const CompactPaginationButton = ({ label, title, disabled, onClick, children }: CompactPaginationButtonProps) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={title}
+    disabled={disabled}
+    onClick={onClick}
+    style={compactPaginationButtonStyle(disabled)}
+  >
+    {children}
+  </button>
+);
+
+const Thumbnail = ({ imagePath, thumbnailPath, hasError }: ThumbnailProps) => {
+  if (!thumbnailPath && !hasError) {
     return (
       <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#111' }}>
         <span style={{ fontSize: 12, color: '#666' }}>Loading thumbnail...</span>
@@ -29,44 +66,56 @@ const Thumbnail = ({ path }: { path: string }) => {
     );
   }
 
+  if (hasError) {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#111', padding: 12, textAlign: 'center' }}>
+        <span style={{ fontSize: 12, color: '#777' }}>Thumbnail unavailable</span>
+      </div>
+    );
+  }
+
+  const imageSrc = thumbnailPath ? convertFileSrc(thumbnailPath) : convertFileSrc(imagePath);
+
   return (
-    <img 
-      src={convertFileSrc(thumbPath)} 
-      alt="Wallpaper" 
-      loading="lazy" 
-      decoding="async" 
-      onError={(e) => { e.currentTarget.src = convertFileSrc(path); }}
-      style={{ width: '100%', height: '100%', objectFit: 'cover', animation: 'fadeIn 0.3s ease' }} 
+    <img
+      src={imageSrc}
+      alt="Wallpaper"
+      loading="lazy"
+      decoding="async"
+      onError={(e) => { e.currentTarget.src = convertFileSrc(imagePath); }}
+      style={{ width: '100%', height: '100%', objectFit: 'cover', animation: 'fadeIn 0.3s ease' }}
     />
   );
 };
 
-export default function Source({ onApplyAndGenerate, onSelectForColors }: SourceProps) {
-  // Multi-Monitor State
+export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForColors }: SourceProps) {
   const [monitorCount, setMonitorCount] = useState(1);
   const [multiMonitorEnabled, setMultiMonitorEnabled] = useState(localStorage.getItem('multiMonitorEnabled') === 'true');
-  const [activeMonitor, setActiveMonitor] = useState(-1); // -1 means Global, 0+ means specific screen
+  const [activeMonitor, setActiveMonitor] = useState(-1);
   const [mainColorMonitor, setMainColorMonitor] = useState(parseInt(localStorage.getItem('mainColorMonitor') || '0'));
 
-  // Wallpaper State
   const [wallpapers, setWallpapers] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isScanningSource, setIsScanningSource] = useState(false);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
   const [favorites, setFavorites] = useState<string[]>(JSON.parse(localStorage.getItem('favorites') || '[]'));
+  const [currentPage, setCurrentPage] = useState(1);
+  const [thumbnailPaths, setThumbnailPaths] = useState<Record<string, string>>({});
+  const [thumbnailErrors, setThumbnailErrors] = useState<Record<string, boolean>>({});
 
-  // Visible items count for lazy rendering
-  const [visibleCount, setVisibleCount] = useState(40);
+  const scanGenerationRef = useRef(0);
+  const pageGenerationRef = useRef(0);
+  const thumbnailCacheRef = useRef<Map<string, string>>(new Map());
 
   const getFolderKey = (monitorId: number) => `wallpaperFolder_${monitorId}`;
-  
+
   const getCurrentFolder = (monitorId: number) => {
     let folder = localStorage.getItem(getFolderKey(monitorId));
-    // Fallback to global folder if specific monitor folder is not set
     if (!folder && monitorId !== -1) {
       folder = localStorage.getItem(getFolderKey(-1));
     }
     return folder;
   };
-  
+
   const [currentFolder, setCurrentFolder] = useState<string | null>(getCurrentFolder(-1));
 
   useEffect(() => {
@@ -75,28 +124,168 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
     }).catch(e => console.error(e));
   }, []);
 
-  useEffect(() => {
-    const folder = getCurrentFolder(activeMonitor);
-    setCurrentFolder(folder);
-    setVisibleCount(40);
-    if (folder) {
-      loadWallpapers(folder);
-    } else {
-      setWallpapers([]);
-    }
-  }, [activeMonitor]);
+  const clearPageCache = () => {
+    thumbnailCacheRef.current.clear();
+    setThumbnailPaths({});
+    setThumbnailErrors({});
+  };
 
   const loadWallpapers = async (folder: string) => {
-    setIsLoading(true);
+    const generation = ++scanGenerationRef.current;
+    ++pageGenerationRef.current;
+    setIsScanningSource(true);
+    setIsLoadingPage(false);
+    setCurrentPage(1);
+    setWallpapers([]);
+    clearPageCache();
+
     try {
       const result: string[] = await invoke('list_wallpapers', { folderPath: folder });
-      setWallpapers(result);
+      if (scanGenerationRef.current === generation) {
+        setWallpapers(result);
+      }
     } catch (e) {
       console.error("Failed to load wallpapers", e);
     } finally {
-      setIsLoading(false);
+      if (scanGenerationRef.current === generation) {
+        setIsScanningSource(false);
+      }
     }
   };
+
+  useEffect(() => {
+    const folder = getCurrentFolder(activeMonitor);
+    setCurrentFolder(folder);
+    if (folder) {
+      loadWallpapers(folder);
+    } else {
+      ++scanGenerationRef.current;
+      ++pageGenerationRef.current;
+      setWallpapers([]);
+      setCurrentPage(1);
+      setIsScanningSource(false);
+      setIsLoadingPage(false);
+      clearPageCache();
+    }
+  }, [activeMonitor]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [itemsPerPage]);
+
+  const sortedWallpapers = useMemo(() => {
+    return [...wallpapers].sort((a, b) => {
+      const aFav = favorites.includes(a);
+      const bFav = favorites.includes(b);
+      if (aFav && !bFav) return -1;
+      if (!aFav && bFav) return 1;
+      if (aFav && bFav) {
+        return favorites.indexOf(a) - favorites.indexOf(b);
+      }
+      return a.localeCompare(b);
+    });
+  }, [wallpapers, favorites]);
+
+  const page = useMemo(
+    () => getWallpaperPage(sortedWallpapers, currentPage, itemsPerPage),
+    [sortedWallpapers, currentPage, itemsPerPage],
+  );
+
+  useEffect(() => {
+    if (currentPage !== page.currentPage) {
+      setCurrentPage(page.currentPage);
+    }
+  }, [currentPage, page.currentPage]);
+
+  const pruneThumbnailCache = (allowedPaths: Set<string>) => {
+    for (const path of thumbnailCacheRef.current.keys()) {
+      if (!allowedPaths.has(path)) {
+        thumbnailCacheRef.current.delete(path);
+      }
+    }
+
+    setThumbnailPaths(prev => {
+      const next: Record<string, string> = {};
+      for (const [path, thumbPath] of Object.entries(prev)) {
+        if (allowedPaths.has(path)) {
+          next[path] = thumbPath;
+        }
+      }
+      return next;
+    });
+  };
+
+  const runThumbnailQueue = async (paths: string[], generation: number, updateLoading: boolean) => {
+    let cursor = 0;
+
+    const worker = async () => {
+      while (cursor < paths.length && pageGenerationRef.current === generation) {
+        const path = paths[cursor];
+        cursor += 1;
+
+        if (thumbnailCacheRef.current.has(path)) {
+          continue;
+        }
+
+        try {
+          const thumbPath = await invoke<string>('generate_thumbnail', { imagePath: path });
+          if (pageGenerationRef.current !== generation) {
+            return;
+          }
+          thumbnailCacheRef.current.set(path, thumbPath);
+          setThumbnailPaths(prev => ({ ...prev, [path]: thumbPath }));
+        } catch (e) {
+          if (pageGenerationRef.current === generation) {
+            console.error("Failed to generate thumbnail", e);
+            setThumbnailErrors(prev => ({ ...prev, [path]: true }));
+          }
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(THUMBNAIL_CONCURRENCY, paths.length) }, worker));
+
+    if (updateLoading && pageGenerationRef.current === generation) {
+      setIsLoadingPage(false);
+    }
+  };
+
+  useEffect(() => {
+    const generation = ++pageGenerationRef.current;
+    const currentPageItems = page.items;
+    const previousPageItems = getWallpaperPage(sortedWallpapers, page.currentPage - 1, itemsPerPage).items;
+    const nextPageItems = getWallpaperPage(sortedWallpapers, page.currentPage + 1, itemsPerPage).items;
+    const cachedWindow = new Set([...previousPageItems, ...currentPageItems, ...nextPageItems]);
+
+    pruneThumbnailCache(cachedWindow);
+    setThumbnailErrors({});
+
+    if (currentPageItems.length === 0) {
+      setIsLoadingPage(false);
+      return;
+    }
+
+    const cachedForPage = currentPageItems.filter(path => thumbnailCacheRef.current.has(path));
+    if (cachedForPage.length > 0) {
+      setThumbnailPaths(prev => {
+        const next = { ...prev };
+        cachedForPage.forEach(path => {
+          const cached = thumbnailCacheRef.current.get(path);
+          if (cached) next[path] = cached;
+        });
+        return next;
+      });
+    }
+
+    const missingCurrentPage = currentPageItems.filter(path => !thumbnailCacheRef.current.has(path));
+    setIsLoadingPage(missingCurrentPage.length > 0);
+    void runThumbnailQueue(missingCurrentPage, generation, true).then(() => {
+      if (pageGenerationRef.current === generation && nextPageItems.length > 0) {
+        const missingNextPage = nextPageItems.filter(path => !thumbnailCacheRef.current.has(path));
+        void runThumbnailQueue(missingNextPage, generation, false);
+      }
+    });
+  }, [page.currentPage, page.items, sortedWallpapers, itemsPerPage]);
 
   const selectFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
@@ -130,7 +319,7 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
   const handleApplyAndGenerate = async (path: string) => {
     try {
       await invoke('apply_wallpaper', { imagePath: path, screenIndex: multiMonitorEnabled ? activeMonitor : -1 });
-      
+
       if (!multiMonitorEnabled || activeMonitor === -1 || activeMonitor === mainColorMonitor) {
         await onApplyAndGenerate(path);
       } else {
@@ -150,29 +339,12 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
     await handleApplyAndGenerate(randomPath);
   };
 
-  const sortedWallpapers = useMemo(() => {
-    return [...wallpapers].sort((a, b) => {
-      const aFav = favorites.includes(a);
-      const bFav = favorites.includes(b);
-      if (aFav && !bFav) return -1;
-      if (!aFav && bFav) return 1;
-      if (aFav && bFav) {
-        return favorites.indexOf(a) - favorites.indexOf(b);
-      }
-      return a.localeCompare(b);
-    });
-  }, [wallpapers, favorites]);
-
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const bottom = e.currentTarget.scrollHeight - e.currentTarget.scrollTop <= e.currentTarget.clientHeight + 400;
-    if (bottom && visibleCount < sortedWallpapers.length) {
-      setVisibleCount(prev => prev + 20);
-    }
+  const goToPage = (nextPage: number) => {
+    setCurrentPage(Math.min(Math.max(1, nextPage), page.totalPages));
   };
 
   return (
     <div className="source-page" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, height: '100%', width: '100%' }}>
-      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -183,8 +355,8 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
           </p>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
-          <button 
-            className={`btn ${multiMonitorEnabled ? 'btn-primary' : 'btn-secondary'}`} 
+          <button
+            className={`btn ${multiMonitorEnabled ? 'btn-primary' : 'btn-secondary'}`}
             onClick={() => {
               const newVal = !multiMonitorEnabled;
               setMultiMonitorEnabled(newVal);
@@ -199,18 +371,17 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
         </div>
       </div>
 
-      {/* Multi-Monitor Controls */}
       {multiMonitorEnabled && (
         <div style={{ background: 'var(--surface)', padding: 16, borderRadius: 16, border: '1px solid var(--border)', display: 'flex', gap: 24, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 8, flex: 1, flexWrap: 'wrap' }}>
-            <button 
+            <button
               className={`btn ${activeMonitor === -1 ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setActiveMonitor(-1)}
             >
               Global (All)
             </button>
             {Array.from({ length: monitorCount }).map((_, idx) => (
-              <button 
+              <button
                 key={idx}
                 className={`btn ${activeMonitor === idx ? 'btn-primary' : 'btn-secondary'}`}
                 onClick={() => setActiveMonitor(idx)}
@@ -219,11 +390,11 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
               </button>
             ))}
           </div>
-          
+
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, borderLeft: '1px solid var(--border)', paddingLeft: 24 }}>
             <span style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Main Color Monitor:</span>
-            <select 
-              value={mainColorMonitor} 
+            <select
+              value={mainColorMonitor}
               onChange={(e) => {
                 const val = parseInt(e.target.value);
                 setMainColorMonitor(val);
@@ -239,14 +410,18 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
         </div>
       )}
 
-      {/* Actions Row */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ display: 'flex', gap: 12 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           {favorites.length > 0 && (
             <button className="btn btn-secondary" onClick={pickRandomFavorite}>
               <Shuffle size={18} />
               Shuffle Favorites
             </button>
+          )}
+          {currentFolder && sortedWallpapers.length > 0 && (
+            <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+              {page.totalItems} wallpapers found - {itemsPerPage} per page
+            </span>
           )}
         </div>
         <button className="btn btn-secondary" onClick={selectFolder}>
@@ -255,99 +430,135 @@ export default function Source({ onApplyAndGenerate, onSelectForColors }: Source
         </button>
       </div>
 
-      {/* Gallery */}
       {!currentFolder ? (
         <div className="drop-zone" onClick={selectFolder} style={{ cursor: 'pointer', flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: 16, border: '2px dashed var(--border)', background: 'var(--surface)' }}>
           <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
             <FolderOpen size={48} color="var(--accent)" />
             <p style={{ margin: 0, fontSize: 18, color: 'var(--text-secondary)' }}>Select a folder for {activeMonitor === -1 ? 'Global' : `Monitor ${activeMonitor + 1}`}</p>
-            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', opacity: 0.7 }}>We will load a beautiful gallery for you</p>
+            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', opacity: 0.7 }}>Only the current page is loaded into the gallery</p>
           </div>
         </div>
-      ) : isLoading ? (
+      ) : isScanningSource ? (
         <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <p>Loading wallpapers...</p>
+          <p>Scanning wallpaper source...</p>
         </div>
       ) : sortedWallpapers.length === 0 ? (
         <p>No wallpapers found in this directory. Only JPG, PNG and WEBP are supported.</p>
       ) : (
-        <div 
-          onScroll={handleScroll}
-          style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', 
-            gap: 16, 
-            overflowY: 'auto', 
-            paddingRight: 8,
-            paddingBottom: 24,
-            flex: 1 
-          }}
-        >
-          {sortedWallpapers.slice(0, visibleCount).map((path, idx) => {
-            const isFav = favorites.includes(path);
-            return (
-              <div key={idx} className="template-card" style={{
-                background: 'var(--surface)',
-                borderRadius: 16,
-                border: '1px solid var(--border)',
-                display: 'flex',
-                flexDirection: 'column',
-                overflow: 'hidden',
-                position: 'relative',
-                height: 260
-              }}>
-                <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, display: 'flex', gap: 8 }}>
-                  <button 
-                    className="btn" 
-                    style={{ 
-                      padding: 8, 
-                      background: 'rgba(0,0,0,0.5)', 
-                      backdropFilter: 'blur(4px)',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      color: '#fff'
-                    }}
-                    onClick={() => onSelectForColors(path)}
-                    title="Load colors into Editor"
-                  >
-                    <Palette size={18} />
-                  </button>
-                  <button 
-                    className="btn" 
-                    style={{ 
-                      padding: 8, 
-                      background: 'rgba(0,0,0,0.5)', 
-                      backdropFilter: 'blur(4px)',
-                      border: '1px solid rgba(255,255,255,0.1)',
-                      color: isFav ? '#ffd700' : '#fff'
-                    }}
-                    onClick={() => toggleFavorite(path)}
-                    title="Toggle Favorite"
-                  >
-                    <Star size={18} fill={isFav ? '#ffd700' : 'none'} />
-                  </button>
+        <>
+          {isLoadingPage && (
+            <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+              Loading thumbnails for page {page.currentPage}...
+            </div>
+          )}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+              gap: 16,
+              overflowY: 'auto',
+              paddingRight: 8,
+              paddingBottom: 24,
+              flex: 1,
+            }}
+          >
+            {page.items.map((path) => {
+              const isFav = favorites.includes(path);
+              return (
+                <div key={path} className="template-card" style={{
+                  background: 'var(--surface)',
+                  borderRadius: 16,
+                  border: '1px solid var(--border)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  overflow: 'hidden',
+                  position: 'relative',
+                  height: 260,
+                }}>
+                  <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, display: 'flex', gap: 8 }}>
+                    <button
+                      className="btn btn-ghost icon-btn"
+                      style={{
+                        padding: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        backdropFilter: 'blur(4px)',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        color: '#fff',
+                      }}
+                      onClick={() => onSelectForColors(path)}
+                      title="Load colors into Editor"
+                    >
+                      <Palette size={18} />
+                    </button>
+                    <button
+                      className="btn btn-ghost icon-btn"
+                      style={{
+                        padding: 0,
+                        background: 'rgba(0,0,0,0.5)',
+                        backdropFilter: 'blur(4px)',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        color: isFav ? '#ffd700' : '#fff',
+                      }}
+                      onClick={() => toggleFavorite(path)}
+                      title="Toggle Favorite"
+                    >
+                      <Star size={18} fill={isFav ? '#ffd700' : 'none'} />
+                    </button>
+                  </div>
+                  <div style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
+                    <Thumbnail imagePath={path} thumbnailPath={thumbnailPaths[path] ?? null} hasError={Boolean(thumbnailErrors[path])} />
+                  </div>
+                  <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
+                    <button className="btn btn-secondary btn-compact" style={{ width: '100%' }} onClick={() => applyWallpaperOnly(path)} title="Sets the wallpaper in KDE only">
+                      Apply Only (KDE)
+                    </button>
+                    <button className="btn btn-primary btn-compact" style={{ width: '100%' }} onClick={() => handleApplyAndGenerate(path)} title="Sets wallpaper, generates colors, and updates all templates">
+                      Apply & Generate
+                    </button>
+                  </div>
                 </div>
-                <div style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
-                  <Thumbnail path={path} />
-                </div>
-                <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
-                  <button className="btn btn-secondary" style={{ padding: '8px 12px', fontSize: 13, width: '100%' }} onClick={() => applyWallpaperOnly(path)} title="Sets the wallpaper in KDE only">
-                    Apply Only (KDE)
-                  </button>
-                  <button className="btn btn-primary" style={{ padding: '8px 12px', fontSize: 13, width: '100%' }} onClick={() => handleApplyAndGenerate(path)} title="Sets wallpaper, generates colors, and updates all templates">
-                    Apply & Generate
-                  </button>
-                </div>
+              );
+            })}
+          </div>
+          <div style={{ padding: '12px 16px 0', display: 'flex', justifyContent: 'center' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 12, maxWidth: '100%', flexWrap: 'nowrap' }}>
+              <CompactPaginationButton
+                label="Página anterior"
+                title="Página anterior"
+                disabled={page.currentPage <= 1 || isScanningSource}
+                onClick={() => goToPage(page.currentPage - 1)}
+              >
+                <ChevronLeft size={16} />
+                <span className="pagination-button-label">Anterior</span>
+              </CompactPaginationButton>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', minWidth: 112, textAlign: 'center' }}>
+                Página {page.currentPage} de {page.totalPages}
               </div>
-            );
-          })}
-        </div>
+              <CompactPaginationButton
+                label="Próxima página"
+                title="Próxima página"
+                disabled={page.currentPage >= page.totalPages || isScanningSource}
+                onClick={() => goToPage(page.currentPage + 1)}
+              >
+                <span className="pagination-button-label">Próxima</span>
+                <ChevronRight size={16} />
+              </CompactPaginationButton>
+            </div>
+          </div>
+        </>
       )}
-      
+
       <style>
         {`
           @keyframes fadeIn {
             from { opacity: 0; }
             to { opacity: 1; }
+          }
+
+          @media (max-width: 520px) {
+            .pagination-button-label {
+              display: none;
+            }
           }
         `}
       </style>

@@ -213,8 +213,8 @@ export default function KdeIntegration({ schemeData, onGenerateFromWallpaper }: 
               <Monitor size={20} color="var(--accent)" />
               <h3 style={{ margin: 0 }}>Current KDE Wallpaper</h3>
               <button 
-                className="btn btn-secondary" 
-                style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12 }}
+                className="btn btn-secondary btn-compact"
+                style={{ marginLeft: 'auto' }}
                 onClick={fetchCurrentWallpaper}
               >
                 <RefreshCw size={14} /> Refresh
@@ -294,14 +294,7 @@ export default function KdeIntegration({ schemeData, onGenerateFromWallpaper }: 
               <select 
                 value={pollInterval} 
                 onChange={(e) => setPollInterval(parseInt(e.target.value))}
-                style={{ 
-                  padding: '6px 10px', 
-                  borderRadius: 8, 
-                  background: 'var(--surface-hover)', 
-                  border: '1px solid var(--border)', 
-                  color: 'var(--text-primary)', 
-                  fontSize: 13 
-                }}
+                style={{ minWidth: 132 }}
               >
                 <option value={2}>2 seconds</option>
                 <option value={5}>5 seconds</option>

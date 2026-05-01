@@ -250,9 +250,9 @@ export default function Templates({ schemeData }: TemplatesProps) {
                   <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Select Discord Client</label>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {discordClients.map((client, idx) => (
-                      <button 
+                      <button
                         key={idx}
-                        className="btn"
+                        className="btn btn-compact"
                         style={{ 
                           flex: 1, 
                           background: outputPath.includes(client.path.replace('~/', '')) ? 'var(--accent)' : 'var(--surface-hover)',
@@ -348,11 +348,11 @@ export default function Templates({ schemeData }: TemplatesProps) {
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-                <button className="btn btn-secondary" style={{ flex: 1, padding: 8, fontSize: 13 }} onClick={() => handlePreview(template)}>Preview</button>
+                <button className="btn btn-secondary btn-compact" style={{ flex: 1 }} onClick={() => handlePreview(template)}>Preview</button>
                 {installedTemplates.has(template.name.toString().replace(/\./g, "_").replace(/-/g, "_")) ? (
-                  <button className="btn btn-secondary" style={{ flex: 1, padding: 8, fontSize: 13, background: 'rgba(255,100,100,0.1)', color: '#ff6b6b' }} onClick={() => handleUninstall(template)}>Remove</button>
+                  <button className="btn btn-danger btn-compact" style={{ flex: 1 }} onClick={() => handleUninstall(template)}>Remove</button>
                 ) : (
-                  <button className="btn btn-primary" style={{ flex: 1, padding: 8, fontSize: 13 }} onClick={() => handleInstallClick(template)}>Install</button>
+                  <button className="btn btn-primary btn-compact" style={{ flex: 1 }} onClick={() => handleInstallClick(template)}>Install</button>
                 )}
               </div>
             </div>
