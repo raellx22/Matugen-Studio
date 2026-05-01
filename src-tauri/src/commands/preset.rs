@@ -2,182 +2,667 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use base64::{Engine as B64Engine, engine::general_purpose};
+use sha2::{Sha256, Digest};
+
+// ── New domain types ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Preset {
+pub struct WallpaperInfo {
+    pub filename: Option<String>,
+    pub original_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base64: Option<String>,
+    pub mime_type: Option<String>,
+    pub sha256: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SchemeInfo {
+    pub scheme_type: String,
+    pub mode: String,
+    pub contrast: Option<f64>,
+    pub opacity: Option<f64>,
+    pub source_color_hex: Option<String>,
+    pub scheme_data: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CustomColor {
+    pub name: String,
+    pub value: String,
+    pub blend: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TemplateSnapshot {
+    pub name: String,
+    pub target_app: Option<String>,
+    pub enabled: bool,
+    pub input_path: Option<String>,
+    pub output_path: Option<String>,
+    pub template_type: Option<String>,
+    pub content: Option<String>,
+    pub pre_hook: Option<String>,
+    pub post_hook: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DesktopSettings {
+    pub target_de: Option<String>,
+    pub apply_wallpaper: bool,
+    pub apply_kde_colorscheme: bool,
+    pub apply_templates: bool,
+}
+
+impl Default for DesktopSettings {
+    fn default() -> Self {
+        Self {
+            target_de: None,
+            apply_wallpaper: true,
+            apply_kde_colorscheme: true,
+            apply_templates: true,
+        }
+    }
+}
+
+/// Unified preset model — used for local storage and as the basis of the export format.
+/// For local storage: `wallpaper.base64` is always `None`.
+/// For `.matugen` exports: `wallpaper.base64` is populated by `export_preset`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PresetV2 {
+    pub version: u32,
+    pub name: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub app_version: Option<String>,
+    pub wallpaper: Option<WallpaperInfo>,
+    pub scheme: SchemeInfo,
+    pub custom_colors: Vec<CustomColor>,
+    pub templates: Vec<TemplateSnapshot>,
+    pub desktop: DesktopSettings,
+}
+
+/// Payload sent by the frontend when saving a preset.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SavePresetInput {
+    pub name: String,
+    pub wallpaper_path: Option<String>,
+    pub scheme_type: String,
+    pub mode: String,
+    pub contrast: Option<f64>,
+    pub opacity: Option<f64>,
+    pub source_color_hex: Option<String>,
+    pub scheme_data: serde_json::Value,
+    pub custom_colors: Option<Vec<CustomColor>>,
+    pub desktop: Option<DesktopSettings>,
+}
+
+/// Return type of `import_preset`, includes non-fatal warnings.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ImportResult {
+    pub preset: PresetV2,
+    pub warnings: Vec<String>,
+}
+
+// ── Legacy types ──────────────────────────────────────────────────────────────
+
+/// Old local format stored in `gui-presets.json` (no `version` field).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct LegacyLocalPreset {
     pub name: String,
     pub wallpaper_path: Option<String>,
     pub scheme_type: String,
     pub scheme_data: serde_json::Value,
 }
 
-/// The shareable preset format — exported as .matugen files
+/// Old export format (version 1 `.matugen` files).
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ExportablePreset {
-    pub version: u32,
+struct ExportablePresetV1 {
+    pub version: Option<u32>,
     pub name: String,
     pub scheme_type: String,
     pub scheme_data: serde_json::Value,
-    pub installed_templates: Vec<String>,
-    /// Wallpaper image encoded as base64 (PNG/JPG)
+    pub installed_templates: Option<Vec<String>>,
     pub wallpaper_base64: Option<String>,
-    /// Original wallpaper filename for reconstruction
     pub wallpaper_filename: Option<String>,
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn get_presets_file_path() -> Result<PathBuf, String> {
     let config_dir = dirs::config_dir()
         .ok_or("Could not find config directory")?
         .join("matugen");
-
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config dir {}: {}", config_dir.display(), e))?;
-    }
-
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config dir: {}", e))?;
     Ok(config_dir.join("gui-presets.json"))
 }
 
-#[tauri::command]
-pub fn save_preset(preset: Preset) -> Result<(), String> {
-    println!("Received save_preset request for: {}", preset.name);
-    let path = get_presets_file_path()?;
+fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let epoch_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
-    let mut presets: Vec<Preset> = if path.exists() {
-        let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read presets: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_else(|_| {
-            println!("Failed to parse existing presets, returning empty list");
-            vec![]
-        })
-    } else {
-        vec![]
+    let sec = epoch_secs % 60;
+    let min = (epoch_secs / 60) % 60;
+    let hour = (epoch_secs / 3600) % 24;
+
+    let mut remaining_days = epoch_secs / 86400;
+    let mut year = 1970u32;
+    loop {
+        let is_leap = (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
+        let days_in_year: u64 = if is_leap { 366 } else { 365 };
+        if remaining_days < days_in_year { break; }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    let is_leap = (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month: [u64; 12] = [31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    while month < 11 && remaining_days >= days_in_month[month] {
+        remaining_days -= days_in_month[month];
+        month += 1;
+    }
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month + 1, remaining_days + 1, hour, min, sec)
+}
+
+fn sha256_of(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+fn mime_type_from_filename(filename: &str) -> String {
+    let lower = filename.to_lowercase();
+    if lower.ends_with(".png") { "image/png".to_string() }
+    else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { "image/jpeg".to_string() }
+    else if lower.ends_with(".webp") { "image/webp".to_string() }
+    else if lower.ends_with(".jxl") { "image/jxl".to_string() }
+    else { "application/octet-stream".to_string() }
+}
+
+fn expand_tilde_str(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+/// Read currently installed templates from `config.toml`, capturing their metadata and content.
+fn read_installed_templates_snapshot() -> Vec<TemplateSnapshot> {
+    let config_dir = match dirs::config_dir() {
+        Some(d) => d.join("matugen"),
+        None => return vec![],
+    };
+    let config_path = config_dir.join("config.toml");
+    if !config_path.exists() { return vec![]; }
+
+    let content = match fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
     };
 
-    // Replace if exists
+    let config: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+
+    let templates_table = match config.get("templates").and_then(|t| t.as_table()) {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    let templates_dir = config_dir.join("templates");
+    let mut snapshots = Vec::new();
+
+    for (key, val) in templates_table {
+        let input_path = val.get("input_path").and_then(|v| v.as_str()).map(String::from);
+        let output_path = val.get("output_path").and_then(|v| v.as_str()).map(String::from);
+        let post_hook = val.get("post_hook").and_then(|v| v.as_str()).map(String::from);
+
+        // Derive a friendly filename: prefer actual file name from input_path.
+        let template_filename = input_path.as_deref()
+            .and_then(|p| PathBuf::from(p).file_name().map(|f| f.to_string_lossy().to_string()))
+            .unwrap_or_else(|| key.replace('_', "."));
+
+        // Try to read template content.
+        let content_str = {
+            let in_templates_dir = templates_dir.join(&template_filename);
+            if in_templates_dir.exists() {
+                fs::read_to_string(&in_templates_dir).ok()
+            } else if let Some(ref ip) = input_path {
+                fs::read_to_string(expand_tilde_str(ip)).ok()
+            } else {
+                None
+            }
+        };
+
+        let target_app = key.split('_').next().map(String::from);
+
+        snapshots.push(TemplateSnapshot {
+            name: template_filename,
+            target_app,
+            enabled: true,
+            input_path,
+            output_path,
+            template_type: None,
+            content: content_str,
+            pre_hook: None,
+            post_hook,
+        });
+    }
+
+    snapshots
+}
+
+/// Load all presets from disk, transparently migrating legacy formats.
+fn load_presets() -> Result<Vec<PresetV2>, String> {
+    let path = get_presets_file_path()?;
+    if !path.exists() { return Ok(vec![]); }
+
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read presets: {}", e))?;
+    if content.trim().is_empty() { return Ok(vec![]); }
+
+    // Peek at the raw JSON to decide which format to deserialise.
+    let raw: Vec<serde_json::Value> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse presets JSON: {}", e))?;
+
+    if raw.is_empty() { return Ok(vec![]); }
+
+    let first_version = raw[0].get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    if first_version >= 2 {
+        let presets: Vec<PresetV2> = raw.into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        Ok(presets)
+    } else {
+        // Legacy local format — migrate and persist.
+        let legacy: Vec<LegacyLocalPreset> = raw.into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        let migrated: Vec<PresetV2> = legacy.into_iter()
+            .map(migrate_legacy_local_to_v2)
+            .collect();
+        // Persist migrated data so the next load is instant.
+        write_presets(&migrated)?;
+        Ok(migrated)
+    }
+}
+
+fn write_presets(presets: &[PresetV2]) -> Result<(), String> {
+    let path = get_presets_file_path()?;
+    let content = serde_json::to_string_pretty(presets)
+        .map_err(|e| format!("Failed to serialize presets: {}", e))?;
+    fs::write(&path, content)
+        .map_err(|e| format!("Failed to write presets: {}", e))
+}
+
+// ── Migration ─────────────────────────────────────────────────────────────────
+
+fn migrate_legacy_local_to_v2(old: LegacyLocalPreset) -> PresetV2 {
+    let wallpaper = old.wallpaper_path.as_ref().map(|p| {
+        let path = PathBuf::from(p);
+        let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
+        let mime = filename.as_deref().map(mime_type_from_filename);
+        WallpaperInfo {
+            filename,
+            original_path: Some(p.clone()),
+            base64: None,
+            mime_type: mime,
+            sha256: None,
+        }
+    });
+
+    let source_color = old.scheme_data.get("source_color_hex")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    PresetV2 {
+        version: 2,
+        name: old.name,
+        created_at: None,
+        updated_at: None,
+        app_version: None,
+        wallpaper,
+        scheme: SchemeInfo {
+            scheme_type: old.scheme_type,
+            mode: "dark".to_string(),
+            contrast: None,
+            opacity: None,
+            source_color_hex: source_color,
+            scheme_data: old.scheme_data,
+        },
+        custom_colors: vec![],
+        templates: vec![],
+        desktop: DesktopSettings::default(),
+    }
+}
+
+fn migrate_export_v1_to_v2(old: ExportablePresetV1) -> PresetV2 {
+    let wallpaper = if old.wallpaper_base64.is_some() || old.wallpaper_filename.is_some() {
+        Some(WallpaperInfo {
+            filename: old.wallpaper_filename.clone(),
+            original_path: None,
+            base64: old.wallpaper_base64,
+            mime_type: old.wallpaper_filename.as_deref().map(mime_type_from_filename),
+            sha256: None,
+        })
+    } else {
+        None
+    };
+
+    let templates = old.installed_templates.unwrap_or_default()
+        .into_iter()
+        .map(|name| {
+            let target_app = name.split('_').next().map(String::from);
+            TemplateSnapshot {
+                name,
+                target_app,
+                enabled: true,
+                input_path: None,
+                output_path: None,
+                template_type: None,
+                content: None,
+                pre_hook: None,
+                post_hook: None,
+            }
+        })
+        .collect();
+
+    let source_color = old.scheme_data.get("source_color_hex")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    PresetV2 {
+        version: 2,
+        name: old.name,
+        created_at: None,
+        updated_at: None,
+        app_version: None,
+        wallpaper,
+        scheme: SchemeInfo {
+            scheme_type: old.scheme_type,
+            mode: "dark".to_string(),
+            contrast: None,
+            opacity: None,
+            source_color_hex: source_color,
+            scheme_data: old.scheme_data,
+        },
+        custom_colors: vec![],
+        templates,
+        desktop: DesktopSettings::default(),
+    }
+}
+
+// ── Tauri commands ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn save_preset(input: SavePresetInput) -> Result<(), String> {
+    let now = now_iso8601();
+
+    let wallpaper = input.wallpaper_path.as_ref().map(|p| {
+        let path = PathBuf::from(p);
+        let filename = path.file_name().map(|f| f.to_string_lossy().to_string());
+        let mime = filename.as_deref().map(mime_type_from_filename);
+        WallpaperInfo {
+            filename,
+            original_path: Some(p.clone()),
+            base64: None,
+            mime_type: mime,
+            sha256: None,
+        }
+    });
+
+    let source_color = input.source_color_hex.clone()
+        .or_else(|| {
+            input.scheme_data.get("source_color_hex")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+
+    let templates = read_installed_templates_snapshot();
+
+    let preset = PresetV2 {
+        version: 2,
+        name: input.name.clone(),
+        created_at: Some(now.clone()),
+        updated_at: Some(now),
+        app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        wallpaper,
+        scheme: SchemeInfo {
+            scheme_type: input.scheme_type,
+            mode: input.mode,
+            contrast: input.contrast,
+            opacity: input.opacity,
+            source_color_hex: source_color,
+            scheme_data: input.scheme_data,
+        },
+        custom_colors: input.custom_colors.unwrap_or_default(),
+        templates,
+        desktop: input.desktop.unwrap_or_default(),
+    };
+
+    let mut presets = load_presets()?;
     if let Some(pos) = presets.iter().position(|p| p.name == preset.name) {
         presets[pos] = preset;
     } else {
         presets.push(preset);
     }
-
-    let content = serde_json::to_string_pretty(&presets).map_err(|e| format!("Failed to serialize: {}", e))?;
-    fs::write(&path, content).map_err(|e| format!("Failed to write presets file: {}", e))?;
-    
-    println!("Saved preset successfully!");
-
-    Ok(())
+    write_presets(&presets)
 }
+
 #[tauri::command]
-pub fn get_presets() -> Result<Vec<Preset>, String> {
-    let path = get_presets_file_path()?;
-    
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let presets: Vec<Preset> = serde_json::from_str(&content).unwrap_or_else(|_| vec![]);
-    
-    Ok(presets)
+pub fn get_presets() -> Result<Vec<PresetV2>, String> {
+    load_presets()
 }
 
 #[tauri::command]
 pub fn delete_preset(name: String) -> Result<(), String> {
-    let path = get_presets_file_path()?;
-    
-    if !path.exists() {
-        return Ok(());
-    }
-    
-    let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut presets: Vec<Preset> = serde_json::from_str(&content).unwrap_or_else(|_| vec![]);
-    
+    let mut presets = load_presets()?;
     presets.retain(|p| p.name != name);
-    
-    let content = serde_json::to_string_pretty(&presets).map_err(|e| e.to_string())?;
-    fs::write(&path, content).map_err(|e| e.to_string())?;
-    
-    Ok(())
+    write_presets(&presets)
 }
 
-/// Export a preset to a .matugen file at the given path
+/// Export a locally-saved preset to a self-contained `.matugen` v2 file,
+/// embedding the wallpaper as base64.
 #[tauri::command]
-pub fn export_preset(preset: Preset, installed_templates: Vec<String>, output_path: String) -> Result<(), String> {
-    // Read and encode wallpaper as base64
-    let (wallpaper_base64, wallpaper_filename) = if let Some(ref wp_path) = preset.wallpaper_path {
-        let path = PathBuf::from(wp_path);
-        if path.exists() {
-            let data = fs::read(&path).map_err(|e| format!("Failed to read wallpaper: {}", e))?;
-            let encoded = general_purpose::STANDARD.encode(&data);
-            let filename = path.file_name()
-                .map(|f| f.to_string_lossy().to_string())
-                .unwrap_or_else(|| "wallpaper.png".to_string());
-            (Some(encoded), Some(filename))
-        } else {
-            (None, None)
+pub fn export_preset(name: String, output_path: String) -> Result<(), String> {
+    if !output_path.ends_with(".matugen") {
+        return Err("Output file must have .matugen extension".to_string());
+    }
+
+    let presets = load_presets()?;
+    let preset = presets.iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| format!("Preset '{}' not found", name))?
+        .clone();
+
+    // Build the export wallpaper object with embedded base64.
+    let export_wallpaper = match &preset.wallpaper {
+        None => None,
+        Some(wp) => {
+            // Try original_path first, then shared-wallpapers fallback.
+            let resolved = wp.original_path.as_deref()
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+                .or_else(|| {
+                    wp.filename.as_deref().and_then(|fname| {
+                        dirs::config_dir().map(|d| {
+                            d.join("matugen").join("shared-wallpapers").join(fname)
+                        })
+                    }).filter(|p| p.exists())
+                });
+
+            match resolved {
+                Some(path) => {
+                    let data = fs::read(&path)
+                        .map_err(|e| format!("Failed to read wallpaper for export: {}", e))?;
+                    let hash = sha256_of(&data);
+                    let encoded = general_purpose::STANDARD.encode(&data);
+                    let filename = path.file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .or_else(|| wp.filename.clone());
+                    let mime = filename.as_deref().map(mime_type_from_filename)
+                        .or_else(|| wp.mime_type.clone());
+                    Some(WallpaperInfo {
+                        filename,
+                        original_path: wp.original_path.clone(),
+                        base64: Some(encoded),
+                        mime_type: mime,
+                        sha256: Some(hash),
+                    })
+                }
+                None => Some(wp.clone()), // Include metadata even if file not found.
+            }
         }
-    } else {
-        (None, None)
     };
 
-    let exportable = ExportablePreset {
-        version: 1,
-        name: preset.name,
-        scheme_type: preset.scheme_type,
-        scheme_data: preset.scheme_data,
-        installed_templates,
-        wallpaper_base64,
-        wallpaper_filename,
+    let exportable = PresetV2 {
+        wallpaper: export_wallpaper,
+        ..preset
     };
 
     let json = serde_json::to_string_pretty(&exportable)
         .map_err(|e| format!("Failed to serialize preset: {}", e))?;
-    
     fs::write(&output_path, json)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+        .map_err(|e| format!("Failed to write export file: {}", e))?;
 
     Ok(())
 }
 
-/// Import a preset from a .matugen file
+/// Import a `.matugen` file (v1 or v2), extract embedded assets, and save locally.
+/// Returns the saved preset plus any non-fatal warnings.
 #[tauri::command]
-pub fn import_preset(file_path: String) -> Result<Preset, String> {
+pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
+    if !file_path.ends_with(".matugen") {
+        return Err("File must have .matugen extension".to_string());
+    }
+
     let content = fs::read_to_string(&file_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    
-    let exportable: ExportablePreset = serde_json::from_str(&content)
+
+    let raw: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid .matugen file: {}", e))?;
 
-    // Extract wallpaper to local folder
-    let wallpaper_path = if let (Some(b64), Some(filename)) = (&exportable.wallpaper_base64, &exportable.wallpaper_filename) {
-        let wallpapers_dir = dirs::config_dir()
-            .ok_or("Could not find config directory")?
-            .join("matugen")
-            .join("shared-wallpapers");
-        
-        fs::create_dir_all(&wallpapers_dir).map_err(|e| e.to_string())?;
+    let file_version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
 
-        let dest = wallpapers_dir.join(filename);
-        let decoded = general_purpose::STANDARD.decode(b64)
-            .map_err(|e| format!("Failed to decode wallpaper: {}", e))?;
-        
-        fs::write(&dest, &decoded)
-            .map_err(|e| format!("Failed to save wallpaper: {}", e))?;
-        
-        Some(dest.to_string_lossy().to_string())
+    let mut preset = if file_version >= 2 {
+        serde_json::from_value::<PresetV2>(raw)
+            .map_err(|e| format!("Failed to parse v2 preset: {}", e))?
     } else {
-        None
+        let v1: ExportablePresetV1 = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse v1 preset: {}", e))?;
+        migrate_export_v1_to_v2(v1)
     };
 
-    // Build the preset
-    let preset = Preset {
-        name: exportable.name,
-        wallpaper_path,
-        scheme_type: exportable.scheme_type,
-        scheme_data: exportable.scheme_data,
-    };
+    let mut warnings: Vec<String> = Vec::new();
 
-    // Auto-save to local presets
-    save_preset(preset.clone())?;
+    // Extract embedded wallpaper to shared-wallpapers/.
+    if let Some(ref mut wp) = preset.wallpaper {
+        if let Some(b64) = wp.base64.take() {
+            let wallpapers_dir = dirs::config_dir()
+                .ok_or("Could not find config directory")?
+                .join("matugen")
+                .join("shared-wallpapers");
+            fs::create_dir_all(&wallpapers_dir)
+                .map_err(|e| format!("Failed to create wallpapers dir: {}", e))?;
 
-    Ok(preset)
+            let filename = wp.filename.clone().unwrap_or_else(|| "wallpaper.png".to_string());
+            let dest = wallpapers_dir.join(&filename);
+
+            match general_purpose::STANDARD.decode(&b64) {
+                Ok(decoded) => {
+                    if let Err(e) = fs::write(&dest, &decoded) {
+                        warnings.push(format!("Could not save wallpaper: {}", e));
+                    } else {
+                        // Use the shared path when original is missing.
+                        if wp.original_path.as_deref().map(|p| !PathBuf::from(p).exists()).unwrap_or(true) {
+                            wp.original_path = Some(dest.to_string_lossy().to_string());
+                        }
+                    }
+                }
+                Err(e) => warnings.push(format!("Could not decode wallpaper: {}", e)),
+            }
+        } else if let Some(ref orig) = wp.original_path.clone() {
+            // No base64 but there is an original_path — check if it still exists.
+            if !PathBuf::from(orig).exists() {
+                warnings.push(format!(
+                    "Wallpaper '{}' not found on disk. Re-select it manually.",
+                    orig
+                ));
+            }
+        }
+    }
+
+    // Recreate embedded template files and register them in config.toml if missing.
+    let config_dir = dirs::config_dir()
+        .ok_or("Could not find config directory")?
+        .join("matugen");
+    let templates_dir = config_dir.join("templates");
+    let config_path = config_dir.join("config.toml");
+
+    for template in &preset.templates {
+        if let Some(ref tmpl_content) = template.content {
+            fs::create_dir_all(&templates_dir).ok();
+            let dest = templates_dir.join(&template.name);
+            if !dest.exists() {
+                if let Err(e) = fs::write(&dest, tmpl_content) {
+                    warnings.push(format!(
+                        "Could not restore template '{}': {}",
+                        template.name, e
+                    ));
+                    continue;
+                }
+            }
+
+            // Register in config.toml if not already present.
+            if let Some(ref out_path) = template.output_path {
+                let name_key = template.name.replace('.', "_").replace('-', "_");
+                let mut cfg = if config_path.exists() {
+                    fs::read_to_string(&config_path).unwrap_or_default()
+                } else {
+                    "[config]\n".to_string()
+                };
+
+                if !cfg.contains(&format!("[templates.{}]", name_key)) {
+                    cfg.push_str(&format!("\n[templates.{}]\n", name_key));
+                    cfg.push_str(&format!("input_path = \"{}\"\n", dest.to_string_lossy()));
+                    cfg.push_str(&format!("output_path = \"{}\"\n", out_path));
+                    if let Some(ref hook) = template.post_hook {
+                        cfg.push_str(&format!("post_hook = \"{}\"\n", hook));
+                    }
+                    if let Err(e) = fs::write(&config_path, &cfg) {
+                        warnings.push(format!(
+                            "Could not register template '{}' in config.toml: {}",
+                            template.name, e
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Ensure the preset name is unique in local storage.
+    let mut existing = load_presets()?;
+    let base_name = preset.name.clone();
+    let mut counter = 1u32;
+    while existing.iter().any(|p| p.name == preset.name) {
+        preset.name = format!("{} ({})", base_name, counter);
+        counter += 1;
+    }
+
+    preset.version = 2;
+    preset.updated_at = Some(now_iso8601());
+
+    existing.push(preset.clone());
+    write_presets(&existing)?;
+
+    Ok(ImportResult { preset, warnings })
 }

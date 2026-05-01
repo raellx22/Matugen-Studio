@@ -1703,7 +1703,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "matugen"
+name = "matugen-core"
 version = "4.1.0"
 dependencies = [
  "ariadne",

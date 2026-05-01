@@ -1,34 +1,98 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { Layers, Trash2, Check, Download, Palette, Monitor, Share2, Upload, Package } from "lucide-react";
+import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { Layers, Trash2, Check, Download, Palette, Monitor, Share2, Upload, Package, Sun, Moon } from "lucide-react";
 
-interface Preset {
-  name: string;
-  wallpaper_path: string | null;
+// ── Types matching the Rust PresetV2 struct ───────────────────────────────────
+
+interface WallpaperInfo {
+  filename: string | null;
+  original_path: string | null;
+  mime_type: string | null;
+  sha256: string | null;
+}
+
+interface SchemeInfo {
   scheme_type: string;
+  mode: string;
+  contrast: number | null;
+  opacity: number | null;
+  source_color_hex: string | null;
   scheme_data: any;
 }
+
+interface CustomColor {
+  name: string;
+  value: string;
+  blend: boolean;
+}
+
+interface TemplateSnapshot {
+  name: string;
+  target_app: string | null;
+  enabled: boolean;
+  input_path: string | null;
+  output_path: string | null;
+  template_type: string | null;
+  content: string | null;
+  pre_hook: string | null;
+  post_hook: string | null;
+}
+
+interface DesktopSettings {
+  target_de: string | null;
+  apply_wallpaper: boolean;
+  apply_kde_colorscheme: boolean;
+  apply_templates: boolean;
+}
+
+interface PresetV2 {
+  version: number;
+  name: string;
+  created_at: string | null;
+  updated_at: string | null;
+  app_version: string | null;
+  wallpaper: WallpaperInfo | null;
+  scheme: SchemeInfo;
+  custom_colors: CustomColor[];
+  templates: TemplateSnapshot[];
+  desktop: DesktopSettings;
+}
+
+interface ImportResult {
+  preset: PresetV2;
+  warnings: string[];
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 interface PresetsProps {
   currentWallpaper: string | null;
   currentSchemeType: string;
   currentSchemeData: any;
-  onApplyPreset: (wallpaper: string | null, schemeType: string, schemeData: any) => Promise<void>;
+  currentMode: string;
+  onApplyPreset: (preset: PresetV2) => Promise<void>;
 }
 
-export default function Presets({ currentWallpaper, currentSchemeType, currentSchemeData, onApplyPreset }: PresetsProps) {
-  const [presets, setPresets] = useState<Preset[]>([]);
+export default function Presets({
+  currentWallpaper,
+  currentSchemeType,
+  currentSchemeData,
+  currentMode,
+  onApplyPreset,
+}: PresetsProps) {
+  const [presets, setPresets] = useState<PresetV2[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [newPresetName, setNewPresetName] = useState("");
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [importStatus, setImportStatus] = useState("");
+  const [installedTemplateCount, setInstalledTemplateCount] = useState(0);
 
   const loadPresets = async () => {
     try {
       setIsLoading(true);
-      const data: Preset[] = await invoke("get_presets");
+      const data: PresetV2[] = await invoke("get_presets");
       setPresets(data);
     } catch (e) {
       console.error(e);
@@ -42,6 +106,14 @@ export default function Presets({ currentWallpaper, currentSchemeType, currentSc
     loadPresets();
   }, []);
 
+  // Load template count when save modal opens.
+  useEffect(() => {
+    if (!showSaveModal) return;
+    invoke<string[]>("get_installed_templates")
+      .then((t) => setInstalledTemplateCount(t.length))
+      .catch(() => setInstalledTemplateCount(0));
+  }, [showSaveModal]);
+
   const handleSavePreset = async () => {
     if (!newPresetName.trim()) return;
     if (!currentSchemeData) {
@@ -51,17 +123,20 @@ export default function Presets({ currentWallpaper, currentSchemeType, currentSc
 
     try {
       setIsSaving(true);
-      const newPreset: Preset = {
-        name: newPresetName.trim(),
-        wallpaper_path: currentWallpaper,
-        scheme_type: currentSchemeType,
-        scheme_data: currentSchemeData
-      };
-
-      console.log("Saving preset:", newPreset);
-
-      await invoke("save_preset", { preset: newPreset });
-      console.log("save_preset invoke succeeded");
+      await invoke("save_preset", {
+        input: {
+          name: newPresetName.trim(),
+          wallpaper_path: currentWallpaper,
+          scheme_type: currentSchemeType,
+          mode: currentMode,
+          contrast: null,
+          opacity: null,
+          source_color_hex: currentSchemeData?.source_color_hex ?? null,
+          scheme_data: currentSchemeData,
+          custom_colors: [],
+          desktop: null,
+        },
+      });
       await loadPresets();
       setShowSaveModal(false);
       setNewPresetName("");
@@ -72,39 +147,31 @@ export default function Presets({ currentWallpaper, currentSchemeType, currentSc
       setIsSaving(false);
     }
   };
+
   const handleDeletePreset = async (name: string) => {
-    if (confirm(`Are you sure you want to delete the preset '${name}'?`)) {
-      try {
-        await invoke("delete_preset", { name });
-        await loadPresets();
-      } catch (e) {
-        alert("Failed to delete preset: " + e);
-      }
+    try {
+      const confirmed = await confirm(`Are you sure you want to delete the preset '${name}'?`, {
+        title: "Delete Preset",
+        kind: "warning",
+      });
+      if (!confirmed) return;
+      await invoke("delete_preset", { name });
+      await loadPresets();
+    } catch (e) {
+      console.error("Delete preset failed:", e);
+      alert("Failed to delete preset: " + e);
     }
   };
 
-  const handleExportPreset = async (preset: Preset) => {
+  const handleExportPreset = async (preset: PresetV2) => {
     try {
-      // Get installed templates to bundle with the preset
-      const installedTemplates: string[] = await invoke("get_installed_templates");
-      
-      // Open a save dialog with .matugen extension
       const filePath = await save({
-        defaultPath: `${preset.name.replace(/\s+/g, '_')}.matugen`,
-        filters: [{
-          name: "Matugen Preset",
-          extensions: ["matugen"]
-        }]
+        defaultPath: `${preset.name.replace(/\s+/g, "_")}.matugen`,
+        filters: [{ name: "Matugen Preset", extensions: ["matugen"] }],
       });
-
       if (!filePath) return;
 
-      await invoke("export_preset", {
-        preset,
-        installedTemplates,
-        outputPath: filePath
-      });
-
+      await invoke("export_preset", { name: preset.name, outputPath: filePath });
       alert(`Preset "${preset.name}" exported successfully!\n\nFile: ${filePath}`);
     } catch (e) {
       alert("Failed to export preset: " + e);
@@ -115,48 +182,50 @@ export default function Presets({ currentWallpaper, currentSchemeType, currentSc
     try {
       const filePath = await open({
         multiple: false,
-        filters: [{
-          name: "Matugen Preset",
-          extensions: ["matugen"]
-        }]
+        filters: [{ name: "Matugen Preset", extensions: ["matugen"] }],
       });
-
       if (!filePath) return;
 
       setImportStatus("Importing preset...");
-      
-      const imported: Preset = await invoke("import_preset", { filePath });
-      
+      const result: ImportResult = await invoke("import_preset", { filePath });
       await loadPresets();
       setImportStatus("");
-      alert(`Preset "${imported.name}" imported successfully!\n\nWallpaper and colors are ready to apply.`);
+
+      let msg = `Preset "${result.preset.name}" imported successfully!`;
+      if (result.warnings.length > 0) {
+        msg += "\n\nWarnings:\n• " + result.warnings.join("\n• ");
+      }
+      alert(msg);
     } catch (e) {
       setImportStatus("");
       alert("Failed to import preset: " + e);
     }
   };
 
-  // Helper to get a color for preview from scheme data
-  const getColor = (data: any, name: string) => {
-    const c = data?.colors?.[name];
+  // Extract a colour for preview from scheme_data.
+  const getColor = (schemeData: any, name: string): string | null => {
+    const c = schemeData?.colors?.[name];
     if (!c) return null;
-    for (const v of ['default', 'dark', 'light']) {
+    for (const v of ["default", "dark", "light"]) {
       const raw = c[v]?.color || c[v]?.hex;
-      if (raw) return raw.length === 9 && raw.startsWith('#') ? '#' + raw.slice(1, 7) : raw;
+      if (raw) return raw.length === 9 && raw.startsWith("#") ? "#" + raw.slice(1, 7) : raw;
     }
     return null;
   };
 
+  const modeIcon = (m: string) =>
+    m === "light" ? <Sun size={12} /> : <Moon size={12} />;
+
   return (
-    <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: 24, height: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div className="tab-content" style={{ display: "flex", flexDirection: "column", gap: 24, height: "100%" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <h2>Theme Presets</h2>
-          <p style={{ color: 'var(--text-secondary)' }}>Save, share and manage your favorite setups</p>
+          <p style={{ color: "var(--text-secondary)" }}>Save, share and manage your favourite setups</p>
         </div>
-        
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-secondary" onClick={handleImportPreset} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-secondary" onClick={handleImportPreset}>
             <Upload size={16} />
             Import .matugen
           </button>
@@ -171,104 +240,111 @@ export default function Presets({ currentWallpaper, currentSchemeType, currentSc
         <div style={{
           padding: 12,
           borderRadius: 8,
-          background: 'rgba(74, 222, 128, 0.1)',
-          color: '#4ade80',
+          background: "rgba(74, 222, 128, 0.1)",
+          color: "#4ade80",
           fontSize: 13,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
         }}>
           <span className="pulse-dot" />
           {importStatus}
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16, overflowY: 'auto' }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16, overflowY: "auto" }}>
         {isLoading ? (
           <p>Loading presets...</p>
         ) : presets.length === 0 ? (
-          <div className="empty-state" style={{ gridColumn: '1 / -1' }}>
+          <div className="empty-state" style={{ gridColumn: "1 / -1" }}>
             <Layers size={48} opacity={0.2} />
             <p>No presets saved yet.</p>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
-              Save your current setup or import a .matugen file from a friend!
+            <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+              Save your current setup or import a .matugen file!
             </p>
           </div>
         ) : (
           presets.map((preset, idx) => {
-            const primary = getColor(preset.scheme_data, "primary");
-            const secondary = getColor(preset.scheme_data, "secondary");
-            const tertiary = getColor(preset.scheme_data, "tertiary");
-            const surface = getColor(preset.scheme_data, "surface");
-            
+            const sd = preset.scheme.scheme_data;
+            const primary   = getColor(sd, "primary");
+            const secondary = getColor(sd, "secondary");
+            const tertiary  = getColor(sd, "tertiary");
+            const surface   = getColor(sd, "surface");
+
             return (
               <div key={idx} className="template-card" style={{
-                background: 'var(--surface)',
+                background: "var(--surface)",
                 borderRadius: 16,
                 padding: 20,
-                border: '1px solid var(--border)',
-                display: 'flex',
-                flexDirection: 'column',
+                border: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
                 gap: 12,
-                transition: 'all 0.2s'
+                transition: "all 0.2s",
               }}>
-                {/* Color band preview */}
-                <div style={{ 
-                  display: 'flex', 
-                  height: 8, 
-                  borderRadius: 4, 
-                  overflow: 'hidden',
-                  gap: 2
-                }}>
-                  <div style={{ flex: 3, background: primary || 'var(--accent)' }} />
-                  <div style={{ flex: 2, background: secondary || 'var(--border)' }} />
-                  <div style={{ flex: 2, background: tertiary || 'var(--surface-hover)' }} />
-                  <div style={{ flex: 1, background: surface || 'var(--surface)' }} />
+                {/* Colour band preview */}
+                <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", gap: 2 }}>
+                  <div style={{ flex: 3, background: primary   || "var(--accent)" }} />
+                  <div style={{ flex: 2, background: secondary || "var(--border)" }} />
+                  <div style={{ flex: 2, background: tertiary  || "var(--surface-hover)" }} />
+                  <div style={{ flex: 1, background: surface   || "var(--surface)" }} />
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ 
-                    background: primary || 'var(--accent-transparent)', 
-                    width: 44,
-                    height: 44,
-                    borderRadius: 12,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: '#fff',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-                    flexShrink: 0
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{
+                    background: primary || "var(--accent-transparent)",
+                    width: 44, height: 44, borderRadius: 12,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    color: "#fff", boxShadow: "0 4px 12px rgba(0,0,0,0.15)", flexShrink: 0,
                   }}>
                     <Palette size={22} />
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <h3 style={{ fontSize: 16, margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{preset.name}</h3>
-                    <span style={{ fontSize: 12, color: 'var(--text-secondary)', textTransform: 'capitalize' }}>
-                      {preset.scheme_type} Scheme
+                    <h3 style={{ fontSize: 16, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {preset.name}
+                    </h3>
+                    <span style={{ fontSize: 12, color: "var(--text-secondary)", textTransform: "capitalize" }}>
+                      {preset.scheme.scheme_type} · {modeIcon(preset.scheme.mode)} {preset.scheme.mode}
                     </span>
                   </div>
                 </div>
-                
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Monitor size={13} /> 
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {preset.wallpaper_path ? preset.wallpaper_path.split('/').pop() : "No wallpaper"}
+
+                <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Monitor size={13} />
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {preset.wallpaper?.filename ?? "No wallpaper"}
                   </span>
                 </div>
 
-                <div style={{ display: 'flex', gap: 6, marginTop: 'auto' }}>
-                  <button className="btn btn-primary" style={{ flex: 1, padding: '8px 12px', fontSize: 13 }} onClick={() => onApplyPreset(preset.wallpaper_path, preset.scheme_type, preset.scheme_data)}>
+                {preset.templates.length > 0 && (
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <Package size={13} />
+                    <span>{preset.templates.length} template{preset.templates.length !== 1 ? "s" : ""}</span>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 6, marginTop: "auto" }}>
+                  <button
+                    className="btn btn-primary btn-compact"
+                    style={{ flex: 1 }}
+                    onClick={() => onApplyPreset(preset)}
+                  >
                     <Check size={15} /> Apply
                   </button>
-                  <button 
-                    className="btn btn-secondary" 
-                    style={{ padding: '8px 10px', fontSize: 12 }} 
+                  <button
+                    className="btn btn-secondary icon-btn"
                     onClick={() => handleExportPreset(preset)}
-                    title="Share this preset"
+                    title="Export / share this preset"
+                    aria-label={`Export ${preset.name}`}
                   >
                     <Share2 size={15} />
                   </button>
-                  <button className="btn btn-secondary" style={{ padding: '8px 10px', background: 'rgba(255,100,100,0.1)', color: '#ff6b6b' }} onClick={() => handleDeletePreset(preset.name)}>
+                  <button
+                    className="btn btn-danger icon-btn"
+                    onClick={() => handleDeletePreset(preset.name)}
+                    title="Delete preset"
+                    aria-label={`Delete ${preset.name}`}
+                  >
                     <Trash2 size={15} />
                   </button>
                 </div>
@@ -280,57 +356,69 @@ export default function Presets({ currentWallpaper, currentSchemeType, currentSc
 
       {showSaveModal && (
         <div className="modal-overlay">
-          <div className="modal-content" style={{ width: 400 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div className="modal-content" style={{ width: 420 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h3>Save Preset</h3>
-              <button className="btn" style={{ padding: 4, background: 'transparent' }} onClick={() => setShowSaveModal(false)}>✕</button>
+              <button className="btn btn-ghost icon-btn" onClick={() => setShowSaveModal(false)} title="Close" aria-label="Close save preset dialog">✕</button>
             </div>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <label style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Preset Name</label>
-              <input 
-                type="text" 
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={{ fontSize: 14, color: "var(--text-secondary)" }}>Preset Name</label>
+              <input
+                type="text"
                 value={newPresetName}
                 onChange={(e) => setNewPresetName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSavePreset()}
+                onKeyDown={(e) => e.key === "Enter" && handleSavePreset()}
                 placeholder="e.g. Cyberpunk Red"
-                style={{ 
-                  padding: '12px', 
-                  borderRadius: 8, 
-                  border: '1px solid var(--border)', 
-                  background: 'var(--surface-hover)', 
-                  color: 'var(--text-primary)',
-                  fontSize: 16
+                style={{
+                  padding: "12px",
+                  borderRadius: 8,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface-hover)",
+                  color: "var(--text-primary)",
+                  fontSize: 16,
                 }}
               />
 
-              <div style={{ 
-                padding: 12, 
-                borderRadius: 8, 
-                background: 'var(--surface-hover)', 
-                fontSize: 12, 
-                color: 'var(--text-secondary)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4
+              {/* Snapshot summary */}
+              <div style={{
+                padding: 12,
+                borderRadius: 8,
+                background: "var(--surface-hover)",
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600, color: "var(--text-primary)" }}>
                   <Package size={13} />
-                  <span>Preset will include:</span>
+                  <span>This preset will include:</span>
                 </div>
-                <div style={{ paddingLeft: 20 }}>
-                  • Color scheme ({currentSchemeType})<br/>
-                  • Wallpaper: {currentWallpaper?.split('/').pop() || 'none'}<br/>
-                  • All color data for templates
+                <div style={{ paddingLeft: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                  <span>• Scheme: <strong>{currentSchemeType}</strong> · {currentMode}</span>
+                  <span>• Wallpaper: <strong>{currentWallpaper ? currentWallpaper.split("/").pop() : "none"}</strong></span>
+                  <span>• Templates: <strong>{installedTemplateCount}</strong> installed</span>
+                  {!currentWallpaper && (
+                    <span style={{ color: "#facc15" }}>
+                      ⚠ No wallpaper selected — colour-only preset
+                    </span>
+                  )}
                 </div>
               </div>
-              
-              <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
-                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowSaveModal(false)}>Cancel</button>
-        {/* Temporarily reverting the debug changes in Presets.tsx */}
-        <button className="btn btn-primary" style={{ flex: 1 }} disabled={!newPresetName.trim() || isSaving} onClick={handleSavePreset}>
-          {isSaving ? "Saving..." : "Save"}
-        </button>
+
+              <div style={{ marginTop: 8, display: "flex", gap: 12 }}>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowSaveModal(false)}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  style={{ flex: 1 }}
+                  disabled={!newPresetName.trim() || isSaving}
+                  onClick={handleSavePreset}
+                >
+                  {isSaving ? "Saving..." : "Save"}
+                </button>
               </div>
             </div>
           </div>
