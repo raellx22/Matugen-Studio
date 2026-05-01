@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tauri + React + Typescript</title>
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        var errDiv = document.createElement('div');
+        errDiv.style = "position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: red; color: white; z-index: 9999; padding: 20px; font-family: monospace; white-space: pre-wrap; font-size: 16px;";
+        errDiv.innerHTML = "<h1>Global Error</h1>" + msg + "<br/>" + url + ":" + line + ":" + col + "<br/><br/>" + (error && error.stack);
+        document.body.appendChild(errDiv);
+        return false;
+      };
+      window.addEventListener('unhandledrejection', function(event) {
+        var errDiv = document.createElement('div');
+        errDiv.style = "position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: red; color: white; z-index: 9999; padding: 20px; font-family: monospace; white-space: pre-wrap; font-size: 16px;";
+        errDiv.innerHTML = "<h1>Unhandled Promise Rejection</h1>" + (event.reason && (event.reason.message || event.reason.stack || event.reason));
+        document.body.appendChild(errDiv);
+      });
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
