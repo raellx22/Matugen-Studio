@@ -1,8 +1,8 @@
+use base64::{engine::general_purpose, Engine as B64Engine};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
-use base64::{Engine as B64Engine, engine::general_purpose};
-use sha2::{Sha256, Digest};
 
 // ── New domain types ──────────────────────────────────────────────────────────
 
@@ -133,8 +133,7 @@ fn get_presets_file_path() -> Result<PathBuf, String> {
     let config_dir = dirs::config_dir()
         .ok_or("Could not find config directory")?
         .join("matugen");
-    fs::create_dir_all(&config_dir)
-        .map_err(|e| format!("Failed to create config dir: {}", e))?;
+    fs::create_dir_all(&config_dir).map_err(|e| format!("Failed to create config dir: {}", e))?;
     Ok(config_dir.join("gui-presets.json"))
 }
 
@@ -154,19 +153,41 @@ fn now_iso8601() -> String {
     loop {
         let is_leap = (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
         let days_in_year: u64 = if is_leap { 366 } else { 365 };
-        if remaining_days < days_in_year { break; }
+        if remaining_days < days_in_year {
+            break;
+        }
         remaining_days -= days_in_year;
         year += 1;
     }
     let is_leap = (year % 4 == 0) && (year % 100 != 0 || year % 400 == 0);
-    let days_in_month: [u64; 12] = [31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let days_in_month: [u64; 12] = [
+        31,
+        if is_leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 0usize;
     while month < 11 && remaining_days >= days_in_month[month] {
         remaining_days -= days_in_month[month];
         month += 1;
     }
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month + 1, remaining_days + 1, hour, min, sec)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year,
+        month + 1,
+        remaining_days + 1,
+        hour,
+        min,
+        sec
+    )
 }
 
 fn sha256_of(data: &[u8]) -> String {
@@ -177,11 +198,17 @@ fn sha256_of(data: &[u8]) -> String {
 
 fn mime_type_from_filename(filename: &str) -> String {
     let lower = filename.to_lowercase();
-    if lower.ends_with(".png") { "image/png".to_string() }
-    else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { "image/jpeg".to_string() }
-    else if lower.ends_with(".webp") { "image/webp".to_string() }
-    else if lower.ends_with(".jxl") { "image/jxl".to_string() }
-    else { "application/octet-stream".to_string() }
+    if lower.ends_with(".png") {
+        "image/png".to_string()
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg".to_string()
+    } else if lower.ends_with(".webp") {
+        "image/webp".to_string()
+    } else if lower.ends_with(".jxl") {
+        "image/jxl".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
 }
 
 fn expand_tilde_str(path: &str) -> PathBuf {
@@ -200,7 +227,9 @@ fn read_installed_templates_snapshot() -> Vec<TemplateSnapshot> {
         None => return vec![],
     };
     let config_path = config_dir.join("config.toml");
-    if !config_path.exists() { return vec![]; }
+    if !config_path.exists() {
+        return vec![];
+    }
 
     let content = match fs::read_to_string(&config_path) {
         Ok(c) => c,
@@ -221,13 +250,27 @@ fn read_installed_templates_snapshot() -> Vec<TemplateSnapshot> {
     let mut snapshots = Vec::new();
 
     for (key, val) in templates_table {
-        let input_path = val.get("input_path").and_then(|v| v.as_str()).map(String::from);
-        let output_path = val.get("output_path").and_then(|v| v.as_str()).map(String::from);
-        let post_hook = val.get("post_hook").and_then(|v| v.as_str()).map(String::from);
+        let input_path = val
+            .get("input_path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let output_path = val
+            .get("output_path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let post_hook = val
+            .get("post_hook")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         // Derive a friendly filename: prefer actual file name from input_path.
-        let template_filename = input_path.as_deref()
-            .and_then(|p| PathBuf::from(p).file_name().map(|f| f.to_string_lossy().to_string()))
+        let template_filename = input_path
+            .as_deref()
+            .and_then(|p| {
+                PathBuf::from(p)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+            })
             .unwrap_or_else(|| key.replace('_', "."));
 
         // Try to read template content.
@@ -263,33 +306,39 @@ fn read_installed_templates_snapshot() -> Vec<TemplateSnapshot> {
 /// Load all presets from disk, transparently migrating legacy formats.
 fn load_presets() -> Result<Vec<PresetV2>, String> {
     let path = get_presets_file_path()?;
-    if !path.exists() { return Ok(vec![]); }
+    if !path.exists() {
+        return Ok(vec![]);
+    }
 
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read presets: {}", e))?;
-    if content.trim().is_empty() { return Ok(vec![]); }
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read presets: {}", e))?;
+    if content.trim().is_empty() {
+        return Ok(vec![]);
+    }
 
     // Peek at the raw JSON to decide which format to deserialise.
     let raw: Vec<serde_json::Value> = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse presets JSON: {}", e))?;
 
-    if raw.is_empty() { return Ok(vec![]); }
+    if raw.is_empty() {
+        return Ok(vec![]);
+    }
 
     let first_version = raw[0].get("version").and_then(|v| v.as_u64()).unwrap_or(0);
 
     if first_version >= 2 {
-        let presets: Vec<PresetV2> = raw.into_iter()
+        let presets: Vec<PresetV2> = raw
+            .into_iter()
             .filter_map(|v| serde_json::from_value(v).ok())
             .collect();
         Ok(presets)
     } else {
         // Legacy local format — migrate and persist.
-        let legacy: Vec<LegacyLocalPreset> = raw.into_iter()
+        let legacy: Vec<LegacyLocalPreset> = raw
+            .into_iter()
             .filter_map(|v| serde_json::from_value(v).ok())
             .collect();
-        let migrated: Vec<PresetV2> = legacy.into_iter()
-            .map(migrate_legacy_local_to_v2)
-            .collect();
+        let migrated: Vec<PresetV2> = legacy.into_iter().map(migrate_legacy_local_to_v2).collect();
         // Persist migrated data so the next load is instant.
         write_presets(&migrated)?;
         Ok(migrated)
@@ -300,8 +349,7 @@ fn write_presets(presets: &[PresetV2]) -> Result<(), String> {
     let path = get_presets_file_path()?;
     let content = serde_json::to_string_pretty(presets)
         .map_err(|e| format!("Failed to serialize presets: {}", e))?;
-    fs::write(&path, content)
-        .map_err(|e| format!("Failed to write presets: {}", e))
+    fs::write(&path, content).map_err(|e| format!("Failed to write presets: {}", e))
 }
 
 // ── Migration ─────────────────────────────────────────────────────────────────
@@ -320,7 +368,9 @@ fn migrate_legacy_local_to_v2(old: LegacyLocalPreset) -> PresetV2 {
         }
     });
 
-    let source_color = old.scheme_data.get("source_color_hex")
+    let source_color = old
+        .scheme_data
+        .get("source_color_hex")
         .and_then(|v| v.as_str())
         .map(String::from);
 
@@ -351,14 +401,19 @@ fn migrate_export_v1_to_v2(old: ExportablePresetV1) -> PresetV2 {
             filename: old.wallpaper_filename.clone(),
             original_path: None,
             base64: old.wallpaper_base64,
-            mime_type: old.wallpaper_filename.as_deref().map(mime_type_from_filename),
+            mime_type: old
+                .wallpaper_filename
+                .as_deref()
+                .map(mime_type_from_filename),
             sha256: None,
         })
     } else {
         None
     };
 
-    let templates = old.installed_templates.unwrap_or_default()
+    let templates = old
+        .installed_templates
+        .unwrap_or_default()
         .into_iter()
         .map(|name| {
             let target_app = name.split('_').next().map(String::from);
@@ -376,7 +431,9 @@ fn migrate_export_v1_to_v2(old: ExportablePresetV1) -> PresetV2 {
         })
         .collect();
 
-    let source_color = old.scheme_data.get("source_color_hex")
+    let source_color = old
+        .scheme_data
+        .get("source_color_hex")
         .and_then(|v| v.as_str())
         .map(String::from);
 
@@ -420,12 +477,13 @@ pub fn save_preset(input: SavePresetInput) -> Result<(), String> {
         }
     });
 
-    let source_color = input.source_color_hex.clone()
-        .or_else(|| {
-            input.scheme_data.get("source_color_hex")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
+    let source_color = input.source_color_hex.clone().or_else(|| {
+        input
+            .scheme_data
+            .get("source_color_hex")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
 
     let templates = read_installed_templates_snapshot();
 
@@ -479,7 +537,8 @@ pub fn export_preset(name: String, output_path: String) -> Result<(), String> {
     }
 
     let presets = load_presets()?;
-    let preset = presets.iter()
+    let preset = presets
+        .iter()
         .find(|p| p.name == name)
         .ok_or_else(|| format!("Preset '{}' not found", name))?
         .clone();
@@ -489,15 +548,19 @@ pub fn export_preset(name: String, output_path: String) -> Result<(), String> {
         None => None,
         Some(wp) => {
             // Try original_path first, then shared-wallpapers fallback.
-            let resolved = wp.original_path.as_deref()
+            let resolved = wp
+                .original_path
+                .as_deref()
                 .map(PathBuf::from)
                 .filter(|p| p.exists())
                 .or_else(|| {
-                    wp.filename.as_deref().and_then(|fname| {
-                        dirs::config_dir().map(|d| {
-                            d.join("matugen").join("shared-wallpapers").join(fname)
+                    wp.filename
+                        .as_deref()
+                        .and_then(|fname| {
+                            dirs::config_dir()
+                                .map(|d| d.join("matugen").join("shared-wallpapers").join(fname))
                         })
-                    }).filter(|p| p.exists())
+                        .filter(|p| p.exists())
                 });
 
             match resolved {
@@ -506,10 +569,13 @@ pub fn export_preset(name: String, output_path: String) -> Result<(), String> {
                         .map_err(|e| format!("Failed to read wallpaper for export: {}", e))?;
                     let hash = sha256_of(&data);
                     let encoded = general_purpose::STANDARD.encode(&data);
-                    let filename = path.file_name()
+                    let filename = path
+                        .file_name()
                         .map(|f| f.to_string_lossy().to_string())
                         .or_else(|| wp.filename.clone());
-                    let mime = filename.as_deref().map(mime_type_from_filename)
+                    let mime = filename
+                        .as_deref()
+                        .map(mime_type_from_filename)
                         .or_else(|| wp.mime_type.clone());
                     Some(WallpaperInfo {
                         filename,
@@ -531,8 +597,7 @@ pub fn export_preset(name: String, output_path: String) -> Result<(), String> {
 
     let json = serde_json::to_string_pretty(&exportable)
         .map_err(|e| format!("Failed to serialize preset: {}", e))?;
-    fs::write(&output_path, json)
-        .map_err(|e| format!("Failed to write export file: {}", e))?;
+    fs::write(&output_path, json).map_err(|e| format!("Failed to write export file: {}", e))?;
 
     Ok(())
 }
@@ -545,11 +610,11 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
         return Err("File must have .matugen extension".to_string());
     }
 
-    let content = fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let content =
+        fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
-    let raw: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Invalid .matugen file: {}", e))?;
+    let raw: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid .matugen file: {}", e))?;
 
     let file_version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(1);
 
@@ -574,7 +639,10 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
             fs::create_dir_all(&wallpapers_dir)
                 .map_err(|e| format!("Failed to create wallpapers dir: {}", e))?;
 
-            let filename = wp.filename.clone().unwrap_or_else(|| "wallpaper.png".to_string());
+            let filename = wp
+                .filename
+                .clone()
+                .unwrap_or_else(|| "wallpaper.png".to_string());
             let dest = wallpapers_dir.join(&filename);
 
             match general_purpose::STANDARD.decode(&b64) {
@@ -583,7 +651,12 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
                         warnings.push(format!("Could not save wallpaper: {}", e));
                     } else {
                         // Use the shared path when original is missing.
-                        if wp.original_path.as_deref().map(|p| !PathBuf::from(p).exists()).unwrap_or(true) {
+                        if wp
+                            .original_path
+                            .as_deref()
+                            .map(|p| !PathBuf::from(p).exists())
+                            .unwrap_or(true)
+                        {
                             wp.original_path = Some(dest.to_string_lossy().to_string());
                         }
                     }

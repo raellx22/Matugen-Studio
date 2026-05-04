@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.raellx22.matugenstudio</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>Matugen Studio</name>
+  <summary>A GUI for generating and applying Matugen themes on Linux</summary>
+  <developer id="io.github.raellx22">
+    <name>raellx22</name>
+  </developer>
+  <description>
+    <p>
+      Matugen Studio generates Material You color palettes from wallpapers and applies them to KDE Plasma,
+      GTK apps, and supported Linux theme templates.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/raellx22</url>
+  <launchable type="desktop-id">Matugen Studio.desktop</launchable>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <releases>
+    <release version="0.1.0" date="2026-05-04" />
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

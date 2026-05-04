@@ -1,13 +1,119 @@
+use execute::{shell, Execute};
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use execute::{shell, Execute};
+use std::time::Duration;
+use tauri::{async_runtime::Mutex, Emitter, Manager};
+use tokio::time::sleep;
+use zbus::zvariant::OwnedValue;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KdeServiceStatus {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub current_wallpaper: Option<String>,
+    #[serde(default = "default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    #[serde(default = "default_scheme_type")]
+    pub scheme_type: String,
+    #[serde(default)]
+    pub gtk_enabled: bool,
+    #[serde(default = "default_gtk_dark")]
+    pub gtk_dark: bool,
+}
+
+impl Default for KdeServiceStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            current_wallpaper: None,
+            poll_interval_secs: default_poll_interval_secs(),
+            scheme_type: default_scheme_type(),
+            gtk_enabled: false,
+            gtk_dark: default_gtk_dark(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KdeWatcherOptions {
+    pub poll_interval_secs: u64,
+    pub scheme_type: String,
+    #[serde(default)]
+    pub gtk_enabled: bool,
+    #[serde(default = "default_gtk_dark")]
+    pub gtk_dark: bool,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KdeWatcherSnapshot {
     pub enabled: bool,
     pub current_wallpaper: Option<String>,
+    pub last_handled_wallpaper: Option<String>,
+    pub is_processing: bool,
+    pub poll_interval_secs: u64,
+    pub scheme_type: String,
+    pub gtk_enabled: bool,
+    pub gtk_dark: bool,
+    pub status_message: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct KdeColorValue {
+    key: String,
+    hex: String,
+}
+
+struct KdeWatcherRuntime {
+    handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[derive(Default)]
+pub struct KdeWallpaperWatcher {
+    inner: Mutex<KdeWatcherInner>,
+}
+
+#[derive(Default)]
+struct KdeWatcherInner {
+    runtime: Option<KdeWatcherRuntime>,
+    snapshot: KdeWatcherSnapshot,
+}
+
+impl Default for KdeWatcherSnapshot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            current_wallpaper: None,
+            last_handled_wallpaper: None,
+            is_processing: false,
+            poll_interval_secs: default_poll_interval_secs(),
+            scheme_type: default_scheme_type(),
+            gtk_enabled: false,
+            gtk_dark: default_gtk_dark(),
+            status_message: "Service stopped.".to_string(),
+            last_error: None,
+        }
+    }
+}
+
+fn default_poll_interval_secs() -> u64 {
+    10
+}
+
+fn default_scheme_type() -> String {
+    "Content".to_string()
+}
+
+fn default_gtk_dark() -> bool {
+    true
 }
 
 /// Extract RGB values (0-255) from a hex color string like "#aabbcc"
@@ -104,8 +210,10 @@ fn generate_kde_colorscheme(context: &serde_json::Value, scheme_name: &str) -> S
     let inverse_on_surface = get_color_or(context, "inverse_on_surface", "on_surface", v);
 
     let surface_container = get_color_or(context, "surface_container", "surface", v);
-    let surface_container_high = get_color_or(context, "surface_container_high", "surface_variant", v);
-    let surface_container_highest = get_color_or(context, "surface_container_highest", "surface_variant", v);
+    let surface_container_high =
+        get_color_or(context, "surface_container_high", "surface_variant", v);
+    let surface_container_highest =
+        get_color_or(context, "surface_container_highest", "surface_variant", v);
     let surface_container_low = get_color_or(context, "surface_container_low", "surface", v);
     let surface_dim = get_color_or(context, "surface_dim", "surface", v);
     let surface_bright = get_color_or(context, "surface_bright", "surface_variant", v);
@@ -306,9 +414,9 @@ pub fn generate_kde_colorscheme_cmd(context: serde_json::Value) -> Result<String
     let color_schemes_dir = dirs::home_dir()
         .ok_or("Could not find home directory")?
         .join(".local/share/color-schemes");
-    
+
     fs::create_dir_all(&color_schemes_dir).map_err(|e| e.to_string())?;
-    
+
     let file_path = color_schemes_dir.join(format!("{}.colors", scheme_name));
     fs::write(&file_path, &content).map_err(|e| e.to_string())?;
 
@@ -316,91 +424,745 @@ pub fn generate_kde_colorscheme_cmd(context: serde_json::Value) -> Result<String
 }
 
 #[tauri::command]
-pub fn apply_kde_colorscheme(context: serde_json::Value) -> Result<(), String> {
+pub async fn apply_kde_colorscheme(context: serde_json::Value) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || apply_kde_colorscheme_blocking(context))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub fn apply_kde_colorscheme_blocking(context: serde_json::Value) -> Result<(), String> {
     let color_schemes_dir = dirs::home_dir()
         .ok_or("Could not find home directory")?
         .join(".local/share/color-schemes");
-    
+
     fs::create_dir_all(&color_schemes_dir).map_err(|e| e.to_string())?;
 
     // Generate both scheme files immediately
     let scheme_name = "MatugenStudio";
     let swap_name = "MatugenStudioSwap";
-    
+
     let content = generate_kde_colorscheme(&context, scheme_name);
     let swap_content = generate_kde_colorscheme(&context, swap_name);
-    
+
     let file_path = color_schemes_dir.join(format!("{}.colors", scheme_name));
     let swap_path = color_schemes_dir.join(format!("{}.colors", swap_name));
-    
+
     fs::write(&file_path, &content).map_err(|e| e.to_string())?;
     fs::write(&swap_path, &swap_content).map_err(|e| e.to_string())?;
 
-    // Spawn the plasma-apply commands in a background thread to avoid blocking UI
-    let swap_path_clone = swap_path.clone();
-    std::thread::spawn(move || {
-        // Apply swap first to force plasma to notice the change
-        let mut cmd1 = shell(&format!("plasma-apply-colorscheme {}", swap_name));
-        cmd1.execute_output().ok();
+    let mut cmd1 = shell(&format!("plasma-apply-colorscheme {}", swap_name));
+    let output1 = cmd1
+        .execute_output()
+        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
+    if !output1.status.success() {
+        fs::remove_file(&swap_path).ok();
+        return Err(String::from_utf8_lossy(&output1.stderr).to_string());
+    }
 
-        // Brief pause for plasma to register the change
-        std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(Duration::from_millis(200));
 
-        // Now apply the real scheme
-        let mut cmd2 = shell(&format!("plasma-apply-colorscheme {}", scheme_name));
-        cmd2.execute_output().ok();
-        
-        // Clean up swap file
-        fs::remove_file(&swap_path_clone).ok();
-    });
+    let mut cmd2 = shell(&format!("plasma-apply-colorscheme {}", scheme_name));
+    let output2 = cmd2
+        .execute_output()
+        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
+    fs::remove_file(&swap_path).ok();
+
+    if !output2.status.success() {
+        return Err(String::from_utf8_lossy(&output2.stderr).to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_kde_color_values() -> Result<Vec<KdeColorValue>, String> {
+    let path = kde_colorscheme_path("MatugenStudio")?;
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mappings = kde_color_mappings();
+    let mut values = Vec::new();
+    for mapping in mappings {
+        if let Some(rgb) = read_ini_value(&content, mapping.section, mapping.property) {
+            values.push(KdeColorValue {
+                key: mapping.key.to_string(),
+                hex: rgb_to_hex(&rgb),
+            });
+        }
+    }
+    Ok(values)
+}
+
+#[tauri::command]
+pub fn apply_kde_color_values(values: Vec<KdeColorValue>) -> Result<(), String> {
+    let path = kde_colorscheme_path("MatugenStudio")?;
+    if !path.exists() {
+        return Err("MatugenStudio.colors has not been generated yet.".to_string());
+    }
+
+    let mut content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    for value in values {
+        let Some(mapping) = kde_color_mappings()
+            .into_iter()
+            .find(|mapping| mapping.key == value.key)
+        else {
+            continue;
+        };
+        let rgb = hex_to_rgb_string(&value.hex)?;
+        content = upsert_ini_value(&content, mapping.section, mapping.property, &rgb);
+    }
+    fs::write(&path, content).map_err(|e| e.to_string())?;
+    apply_existing_kde_colorscheme()
+}
+
+struct KdeColorMapping {
+    key: &'static str,
+    section: &'static str,
+    property: &'static str,
+}
+
+fn kde_color_mappings() -> Vec<KdeColorMapping> {
+    vec![
+        KdeColorMapping {
+            key: "windowBackground",
+            section: "Colors:Window",
+            property: "BackgroundNormal",
+        },
+        KdeColorMapping {
+            key: "viewBackground",
+            section: "Colors:View",
+            property: "BackgroundNormal",
+        },
+        KdeColorMapping {
+            key: "button",
+            section: "Colors:Button",
+            property: "BackgroundNormal",
+        },
+        KdeColorMapping {
+            key: "selection",
+            section: "Colors:Selection",
+            property: "BackgroundNormal",
+        },
+        KdeColorMapping {
+            key: "foreground",
+            section: "Colors:Window",
+            property: "ForegroundNormal",
+        },
+        KdeColorMapping {
+            key: "link",
+            section: "Colors:Window",
+            property: "ForegroundLink",
+        },
+        KdeColorMapping {
+            key: "negative",
+            section: "Colors:Window",
+            property: "ForegroundNegative",
+        },
+        KdeColorMapping {
+            key: "neutral",
+            section: "Colors:Window",
+            property: "ForegroundNeutral",
+        },
+        KdeColorMapping {
+            key: "visited",
+            section: "Colors:Window",
+            property: "ForegroundVisited",
+        },
+    ]
+}
+
+fn kde_colorscheme_path(name: &str) -> Result<PathBuf, String> {
+    Ok(dirs::home_dir()
+        .ok_or("Could not find home directory")?
+        .join(".local/share/color-schemes")
+        .join(format!("{}.colors", name)))
+}
+
+fn read_ini_value(content: &str, section: &str, property: &str) -> Option<String> {
+    let mut in_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_section = trimmed == format!("[{}]", section);
+            continue;
+        }
+        if in_section {
+            if let Some((key, value)) = trimmed.split_once('=') {
+                if key == property {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn upsert_ini_value(content: &str, section: &str, property: &str, value: &str) -> String {
+    let mut output = Vec::new();
+    let mut in_section = false;
+    let mut wrote_property = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if in_section && !wrote_property {
+                output.push(format!("{}={}", property, value));
+                wrote_property = true;
+            }
+            in_section = trimmed == format!("[{}]", section);
+        }
+
+        if in_section && trimmed.starts_with(&format!("{}=", property)) {
+            output.push(format!("{}={}", property, value));
+            wrote_property = true;
+        } else {
+            output.push(line.to_string());
+        }
+    }
+
+    if in_section && !wrote_property {
+        output.push(format!("{}={}", property, value));
+    }
+
+    output.join("\n") + "\n"
+}
+
+fn rgb_to_hex(rgb: &str) -> String {
+    let parts = rgb
+        .split(',')
+        .filter_map(|part| part.trim().parse::<u8>().ok())
+        .collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return "#000000".to_string();
+    }
+    format!("#{:02X}{:02X}{:02X}", parts[0], parts[1], parts[2])
+}
+
+fn hex_to_rgb_string(hex: &str) -> Result<String, String> {
+    let value = hex.trim();
+    if value.len() != 7 || !value.starts_with('#') {
+        return Err("Color must use #RRGGBB format".to_string());
+    }
+    let (r, g, b) = hex_to_rgb(value);
+    Ok(format!("{},{},{}", r, g, b))
+}
+
+fn apply_existing_kde_colorscheme() -> Result<(), String> {
+    let scheme_path = kde_colorscheme_path("MatugenStudio")?;
+    let swap_path = kde_colorscheme_path("MatugenStudioSwap")?;
+    let content = fs::read_to_string(&scheme_path).map_err(|e| e.to_string())?;
+    let swap_content = content
+        .replace("ColorScheme=MatugenStudio", "ColorScheme=MatugenStudioSwap")
+        .replace("Name=MatugenStudio", "Name=MatugenStudioSwap");
+    fs::write(&swap_path, swap_content).map_err(|e| e.to_string())?;
+
+    let mut cmd1 = shell("plasma-apply-colorscheme MatugenStudioSwap");
+    let output1 = cmd1
+        .execute_output()
+        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
+    if !output1.status.success() {
+        fs::remove_file(&swap_path).ok();
+        return Err(String::from_utf8_lossy(&output1.stderr).to_string());
+    }
+
+    std::thread::sleep(Duration::from_millis(120));
+
+    let mut cmd2 = shell("plasma-apply-colorscheme MatugenStudio");
+    let output2 = cmd2
+        .execute_output()
+        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
+    fs::remove_file(&swap_path).ok();
+
+    if !output2.status.success() {
+        return Err(String::from_utf8_lossy(&output2.stderr).to_string());
+    }
 
     Ok(())
 }
 
 /// Get the current KDE wallpaper path from Plasma config
 #[tauri::command]
-pub fn get_kde_current_wallpaper() -> Result<Option<String>, String> {
-    // Try reading the current wallpaper from plasma config via qdbus
-    let output = Command::new("qdbus6")
-        .arg("org.kde.plasmashell")
-        .arg("/PlasmaShell")
-        .arg("org.kde.PlasmaShell.evaluateScript")
-        .arg("var allDesktops = desktops(); var d = allDesktops[0]; d.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General']; print(d.readConfig('Image'));")
-        .output();
-    
-    match output {
-        Ok(o) if o.status.success() => {
-            let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
-            if path.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(path))
-            }
-        }
-        _ => {
-            // Fallback: try qdbus (without 6)
-            let output2 = Command::new("qdbus")
-                .arg("org.kde.plasmashell")
-                .arg("/PlasmaShell")
-                .arg("org.kde.PlasmaShell.evaluateScript")
-                .arg("var allDesktops = desktops(); var d = allDesktops[0]; d.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General']; print(d.readConfig('Image'));")
-                .output();
+pub async fn get_kde_current_wallpaper() -> Result<Option<String>, String> {
+    get_current_kde_wallpaper().await
+}
 
-            match output2 {
-                Ok(o) if o.status.success() => {
-                    let path = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    let path = path.strip_prefix("file://").unwrap_or(&path).to_string();
-                    if path.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(path))
+async fn get_current_kde_wallpaper() -> Result<Option<String>, String> {
+    match get_current_kde_wallpaper_zbus(0).await {
+        Ok(path) if path.is_some() => Ok(path),
+        Ok(_) | Err(_) => tauri::async_runtime::spawn_blocking(get_current_kde_wallpaper_qdbus)
+            .await
+            .map_err(|e| e.to_string())?,
+    }
+}
+
+async fn get_current_kde_wallpaper_zbus(screen: u32) -> Result<Option<String>, String> {
+    let connection = zbus::Connection::session()
+        .await
+        .map_err(|e| e.to_string())?;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.kde.plasmashell",
+        "/PlasmaShell",
+        "org.kde.PlasmaShell",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let message = proxy
+        .call_method("wallpaper", &screen)
+        .await
+        .map_err(|e| e.to_string())?;
+    let body = message.body();
+
+    if let Ok(path) = body.deserialize::<String>() {
+        return Ok(normalize_wallpaper_path(&path));
+    }
+
+    if let Ok(map) = body.deserialize::<HashMap<String, OwnedValue>>() {
+        for key in ["Image", "WallpaperSource", "currentWallpaper", "path"] {
+            if let Some(value) = map.get(key) {
+                if let Ok(raw) = value.try_clone().and_then(String::try_from) {
+                    if let Some(path) = normalize_wallpaper_path(&raw) {
+                        return Ok(Some(path));
                     }
                 }
-                _ => Ok(None),
             }
         }
     }
+
+    let debug_body = format!("{:?}", body);
+    Ok(normalize_wallpaper_path(&debug_body))
+}
+
+fn get_current_kde_wallpaper_qdbus() -> Result<Option<String>, String> {
+    for program in ["qdbus6", "qdbus"] {
+        if let Ok(output) = Command::new(program)
+            .arg("org.kde.plasmashell")
+            .arg("/PlasmaShell")
+            .arg("org.kde.PlasmaShell.wallpaper")
+            .arg("0")
+            .output()
+        {
+            if output.status.success() {
+                let raw = String::from_utf8_lossy(&output.stdout);
+                if let Some(path) = normalize_wallpaper_path(&raw) {
+                    return Ok(Some(path));
+                }
+            }
+        }
+    }
+
+    let script = "var allDesktops = desktops(); var d = allDesktops[0]; d.currentConfigGroup = ['Wallpaper', d.wallpaperPlugin, 'General']; print(d.readConfig('Image'));";
+    for program in ["qdbus6", "qdbus"] {
+        if let Ok(output) = Command::new(program)
+            .arg("org.kde.plasmashell")
+            .arg("/PlasmaShell")
+            .arg("org.kde.PlasmaShell.evaluateScript")
+            .arg(script)
+            .output()
+        {
+            if output.status.success() {
+                let raw = String::from_utf8_lossy(&output.stdout);
+                if let Some(path) = normalize_wallpaper_path(&raw) {
+                    return Ok(Some(path));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn normalize_wallpaper_path(raw: &str) -> Option<String> {
+    let mut value = raw.trim().trim_matches('"').trim_matches('\'').to_string();
+    if value.is_empty() || value == "null" || value == "undefined" {
+        return None;
+    }
+
+    if let Some(index) = value.find("file:") {
+        value = value[index..].to_string();
+    }
+
+    if let Some(rest) = value.strip_prefix("Image:") {
+        value = rest.trim().to_string();
+    }
+
+    if let Some(index) = value.find('\n') {
+        value = value[..index].trim().to_string();
+    }
+
+    if let Some(index) = value.find("+video") {
+        value = value[..index].to_string();
+    }
+
+    let path = if let Some(rest) = value.strip_prefix("file://") {
+        rest
+    } else if let Some(rest) = value.strip_prefix("file:") {
+        rest
+    } else {
+        value.as_str()
+    };
+
+    if path.is_empty() || !path.starts_with('/') {
+        return None;
+    }
+
+    Some(percent_decode_str(path).decode_utf8_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn start_kde_wallpaper_watcher(
+    app: tauri::AppHandle,
+    options: KdeWatcherOptions,
+) -> Result<KdeWatcherSnapshot, String> {
+    start_kde_wallpaper_watcher_inner(app, options, None).await
+}
+
+#[tauri::command]
+pub async fn stop_kde_wallpaper_watcher(
+    app: tauri::AppHandle,
+) -> Result<KdeWatcherSnapshot, String> {
+    let state = app.state::<KdeWallpaperWatcher>();
+    let snapshot = {
+        let mut inner = state.inner.lock().await;
+        if let Some(runtime) = inner.runtime.take() {
+            runtime.handle.abort();
+        }
+
+        inner.snapshot.enabled = false;
+        inner.snapshot.is_processing = false;
+        inner.snapshot.status_message = "Service stopped.".to_string();
+        inner.snapshot.clone()
+    };
+
+    persist_service_status(&KdeServiceStatus {
+        enabled: false,
+        current_wallpaper: snapshot.last_handled_wallpaper.clone(),
+        poll_interval_secs: snapshot.poll_interval_secs,
+        scheme_type: snapshot.scheme_type.clone(),
+        gtk_enabled: snapshot.gtk_enabled,
+        gtk_dark: snapshot.gtk_dark,
+    })?;
+    emit_watcher_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn get_kde_wallpaper_watcher_status(
+    app: tauri::AppHandle,
+) -> Result<KdeWatcherSnapshot, String> {
+    let state = app.state::<KdeWallpaperWatcher>();
+    let snapshot = {
+        let inner = state.inner.lock().await;
+        inner.snapshot.clone()
+    };
+
+    if snapshot.enabled || snapshot.status_message != "Service stopped." {
+        return Ok(snapshot);
+    }
+
+    let persisted = read_service_status()?;
+    let mut next = snapshot;
+    next.poll_interval_secs = persisted.poll_interval_secs;
+    next.scheme_type = persisted.scheme_type;
+    next.last_handled_wallpaper = persisted.current_wallpaper;
+    next.gtk_enabled = persisted.gtk_enabled;
+    next.gtk_dark = persisted.gtk_dark;
+    Ok(next)
+}
+
+#[tauri::command]
+pub async fn mark_kde_wallpaper_handled(
+    app: tauri::AppHandle,
+    wallpaper_path: String,
+) -> Result<KdeWatcherSnapshot, String> {
+    update_watcher_snapshot(&app, |snapshot| {
+        snapshot.current_wallpaper = Some(wallpaper_path.clone());
+        snapshot.last_handled_wallpaper = Some(wallpaper_path.clone());
+        snapshot.is_processing = false;
+        snapshot.status_message = if snapshot.enabled {
+            format!(
+                "Wallpaper handled by Matugen Studio: {}.",
+                wallpaper_file_name(&wallpaper_path)
+            )
+        } else {
+            "Service stopped.".to_string()
+        };
+        snapshot.last_error = None;
+    })
+    .await;
+
+    let snapshot = current_watcher_snapshot(&app).await;
+    persist_service_status(&KdeServiceStatus {
+        enabled: snapshot.enabled,
+        current_wallpaper: snapshot.last_handled_wallpaper.clone(),
+        poll_interval_secs: snapshot.poll_interval_secs,
+        scheme_type: snapshot.scheme_type.clone(),
+        gtk_enabled: snapshot.gtk_enabled,
+        gtk_dark: snapshot.gtk_dark,
+    })?;
+    Ok(snapshot)
+}
+
+pub fn restore_kde_wallpaper_watcher(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let Ok(status) = read_service_status() else {
+            return;
+        };
+
+        if status.enabled {
+            let options = KdeWatcherOptions {
+                poll_interval_secs: status.poll_interval_secs,
+                scheme_type: status.scheme_type.clone(),
+                gtk_enabled: status.gtk_enabled,
+                gtk_dark: status.gtk_dark,
+            };
+            let _ = start_kde_wallpaper_watcher_inner(app, options, status.current_wallpaper).await;
+        }
+    });
+}
+
+async fn start_kde_wallpaper_watcher_inner(
+    app: tauri::AppHandle,
+    options: KdeWatcherOptions,
+    last_handled_wallpaper: Option<String>,
+) -> Result<KdeWatcherSnapshot, String> {
+    let poll_interval_secs = options.poll_interval_secs.clamp(5, 3600);
+    let scheme_type = if options.scheme_type.trim().is_empty() {
+        default_scheme_type()
+    } else {
+        options.scheme_type
+    };
+    let gtk_enabled = options.gtk_enabled;
+    let gtk_dark = options.gtk_dark;
+    let last_handled_wallpaper = last_handled_wallpaper.or_else(|| {
+        read_service_status()
+            .ok()
+            .and_then(|status| status.current_wallpaper)
+    });
+    let state = app.state::<KdeWallpaperWatcher>();
+
+    let snapshot = {
+        let mut inner = state.inner.lock().await;
+        if let Some(runtime) = inner.runtime.take() {
+            runtime.handle.abort();
+        }
+
+        inner.snapshot.enabled = true;
+        inner.snapshot.is_processing = false;
+        inner.snapshot.poll_interval_secs = poll_interval_secs;
+        inner.snapshot.scheme_type = scheme_type.clone();
+        inner.snapshot.gtk_enabled = gtk_enabled;
+        inner.snapshot.gtk_dark = gtk_dark;
+        inner.snapshot.last_handled_wallpaper = last_handled_wallpaper.clone();
+        inner.snapshot.status_message = "Monitoring KDE wallpaper changes.".to_string();
+        inner.snapshot.last_error = None;
+
+        let app_for_task = app.clone();
+        let handle = tauri::async_runtime::spawn(async move {
+            kde_wallpaper_watcher_loop(
+                app_for_task,
+                poll_interval_secs,
+                scheme_type,
+                gtk_enabled,
+                gtk_dark,
+            )
+            .await;
+        });
+        inner.runtime = Some(KdeWatcherRuntime { handle });
+        inner.snapshot.clone()
+    };
+
+    persist_service_status(&KdeServiceStatus {
+        enabled: true,
+        current_wallpaper: snapshot.last_handled_wallpaper.clone(),
+        poll_interval_secs: snapshot.poll_interval_secs,
+        scheme_type: snapshot.scheme_type.clone(),
+        gtk_enabled: snapshot.gtk_enabled,
+        gtk_dark: snapshot.gtk_dark,
+    })?;
+    emit_watcher_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+async fn kde_wallpaper_watcher_loop(
+    app: tauri::AppHandle,
+    poll_interval_secs: u64,
+    scheme_type: String,
+    gtk_enabled: bool,
+    gtk_dark: bool,
+) {
+    loop {
+        match get_current_kde_wallpaper().await {
+            Ok(Some(wallpaper)) => {
+                update_watcher_snapshot(&app, |snapshot| {
+                    snapshot.current_wallpaper = Some(wallpaper.clone());
+                    snapshot.last_error = None;
+                })
+                .await;
+
+                if should_handle_wallpaper(&app, &wallpaper).await {
+                    sleep(Duration::from_millis(600)).await;
+                    let stable_wallpaper = match get_current_kde_wallpaper().await {
+                        Ok(Some(path)) if path == wallpaper => path,
+                        Ok(_) => {
+                            sleep(Duration::from_secs(poll_interval_secs)).await;
+                            continue;
+                        }
+                        Err(error) => {
+                            record_watcher_error(&app, error).await;
+                            sleep(Duration::from_secs(poll_interval_secs)).await;
+                            continue;
+                        }
+                    };
+
+                    process_wallpaper_change(
+                        &app,
+                        stable_wallpaper,
+                        scheme_type.clone(),
+                        gtk_enabled,
+                        gtk_dark,
+                    )
+                    .await;
+                }
+            }
+            Ok(None) => {
+                update_watcher_snapshot(&app, |snapshot| {
+                    snapshot.current_wallpaper = None;
+                    snapshot.status_message = "KDE wallpaper not detected.".to_string();
+                })
+                .await;
+            }
+            Err(error) => {
+                record_watcher_error(&app, error).await;
+            }
+        }
+
+        sleep(Duration::from_secs(poll_interval_secs)).await;
+    }
+}
+
+async fn should_handle_wallpaper(app: &tauri::AppHandle, wallpaper: &str) -> bool {
+    let state = app.state::<KdeWallpaperWatcher>();
+    let inner = state.inner.lock().await;
+    inner.snapshot.enabled
+        && !inner.snapshot.is_processing
+        && inner.snapshot.last_handled_wallpaper.as_deref() != Some(wallpaper)
+}
+
+async fn process_wallpaper_change(
+    app: &tauri::AppHandle,
+    wallpaper: String,
+    scheme_type: String,
+    gtk_enabled: bool,
+    gtk_dark: bool,
+) {
+    update_watcher_snapshot(app, |snapshot| {
+        snapshot.is_processing = true;
+        snapshot.status_message = format!(
+            "Wallpaper changed. Generating theme from {}.",
+            wallpaper_file_name(&wallpaper)
+        );
+        snapshot.last_error = None;
+    })
+    .await;
+
+    let wallpaper_for_task = wallpaper.clone();
+    let scheme_for_task = scheme_type.clone();
+    let app_for_task = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let context = crate::commands::color::generate_scheme_from_image_blocking(
+            wallpaper_for_task,
+            scheme_for_task,
+        )?;
+        crate::commands::template::apply_theme_blocking(context.clone())?;
+        apply_kde_colorscheme_blocking(context.clone())?;
+        if gtk_enabled {
+            crate::commands::gtk::apply_gtk_theme_blocking(&app_for_task, &context, gtk_dark)?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|result| result);
+
+    match result {
+        Ok(()) => {
+            update_watcher_snapshot(app, |snapshot| {
+                snapshot.is_processing = false;
+                snapshot.last_handled_wallpaper = Some(wallpaper.clone());
+                snapshot.status_message =
+                    format!("Theme applied from {}.", wallpaper_file_name(&wallpaper));
+                snapshot.last_error = None;
+            })
+            .await;
+        }
+        Err(error) => {
+            update_watcher_snapshot(app, |snapshot| {
+                snapshot.is_processing = false;
+                snapshot.last_handled_wallpaper = Some(wallpaper.clone());
+                snapshot.status_message = format!(
+                    "Theme generation failed for {}.",
+                    wallpaper_file_name(&wallpaper)
+                );
+                snapshot.last_error = Some(error);
+            })
+            .await;
+        }
+    }
+
+    let snapshot = current_watcher_snapshot(app).await;
+    let _ = persist_service_status(&KdeServiceStatus {
+        enabled: snapshot.enabled,
+        current_wallpaper: snapshot.last_handled_wallpaper,
+        poll_interval_secs: snapshot.poll_interval_secs,
+        scheme_type: snapshot.scheme_type,
+        gtk_enabled: snapshot.gtk_enabled,
+        gtk_dark: snapshot.gtk_dark,
+    });
+}
+
+async fn record_watcher_error(app: &tauri::AppHandle, error: String) {
+    update_watcher_snapshot(app, |snapshot| {
+        snapshot.is_processing = false;
+        snapshot.last_error = Some(error);
+        snapshot.status_message = "Wallpaper monitor could not query KDE.".to_string();
+    })
+    .await;
+}
+
+async fn current_watcher_snapshot(app: &tauri::AppHandle) -> KdeWatcherSnapshot {
+    let state = app.state::<KdeWallpaperWatcher>();
+    let inner = state.inner.lock().await;
+    inner.snapshot.clone()
+}
+
+async fn update_watcher_snapshot<F>(app: &tauri::AppHandle, update: F)
+where
+    F: FnOnce(&mut KdeWatcherSnapshot),
+{
+    let snapshot = {
+        let state = app.state::<KdeWallpaperWatcher>();
+        let mut inner = state.inner.lock().await;
+        update(&mut inner.snapshot);
+        inner.snapshot.clone()
+    };
+
+    emit_watcher_snapshot(app, &snapshot);
+}
+
+fn emit_watcher_snapshot(app: &tauri::AppHandle, snapshot: &KdeWatcherSnapshot) {
+    let _ = app.emit("kde-wallpaper-watcher-status", snapshot.clone());
+}
+
+fn wallpaper_file_name(path: &str) -> String {
+    PathBuf::from(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(path)
+        .to_string()
 }
 
 /// Get/Set service status from a config file
@@ -414,20 +1176,25 @@ fn get_service_config_path() -> Result<PathBuf, String> {
 
 #[tauri::command]
 pub fn get_kde_service_status() -> Result<KdeServiceStatus, String> {
+    read_service_status()
+}
+
+fn read_service_status() -> Result<KdeServiceStatus, String> {
     let path = get_service_config_path()?;
     if path.exists() {
         let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())
     } else {
-        Ok(KdeServiceStatus {
-            enabled: false,
-            current_wallpaper: None,
-        })
+        Ok(KdeServiceStatus::default())
     }
 }
 
 #[tauri::command]
 pub fn set_kde_service_status(status: KdeServiceStatus) -> Result<(), String> {
+    persist_service_status(&status)
+}
+
+fn persist_service_status(status: &KdeServiceStatus) -> Result<(), String> {
     let path = get_service_config_path()?;
     let content = serde_json::to_string_pretty(&status).map_err(|e| e.to_string())?;
     fs::write(&path, content).map_err(|e| e.to_string())?;

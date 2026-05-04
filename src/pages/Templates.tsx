@@ -1,12 +1,22 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getDefaultConfig } from "../utils/templateDefaults";
 import { Search, LayoutTemplate, X } from "lucide-react";
 
 interface TemplateInfo {
-  name: String;
-  path: String;
+  name: string;
+  displayName: string;
+  path: string;
+  relativePath: string;
   size: number;
+  category: string;
+  targetApp: string;
+  automationLevel: "auto" | "config-patch" | "manual" | string;
+  installable: boolean;
+  defaultOutputPath?: string;
+  defaultPostHook?: string;
+  requiredCommands: string[];
+  manualSteps: string[];
+  relatedFiles: string[];
 }
 
 interface TemplatesProps {
@@ -17,6 +27,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeCategory, setActiveCategory] = useState("All");
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewName, setPreviewName] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
@@ -28,7 +39,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
 
   // We add an effect to check Discord clients when the modal opens for midnight-discord.css
   useEffect(() => {
-    if (installTemplate && installTemplate.name === "midnight-discord.css") {
+    if (installTemplate && installTemplate.relativePath.endsWith("midnight-discord.css")) {
       checkDiscordClients();
     }
   }, [installTemplate]);
@@ -67,9 +78,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
   useEffect(() => {
     async function fetchTemplates() {
       try {
-        const data: TemplateInfo[] = await invoke("list_available_templates", {
-          themesDir: "/home/raell/Projetos/matugen-themes"
-        });
+        const data: TemplateInfo[] = await invoke("list_bundled_templates");
         setTemplates(data);
       } catch (err) {
         console.error("Error fetching templates", err);
@@ -81,17 +90,32 @@ export default function Templates({ schemeData }: TemplatesProps) {
     fetchInstalled();
   }, []);
 
-  const filteredTemplates = templates.filter(t => 
-    t.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const categories = ["All", ...Array.from(new Set(templates.map(t => t.category)))];
 
-  const formatTemplateName = (filename: String) => {
-    // Convert to string and remove extension
-    const nameWithoutExt = filename.toString().replace(/\.[^/.]+$/, "");
-    // Replace hyphens/underscores with spaces
-    const spacedName = nameWithoutExt.replace(/[-_]/g, " ");
-    // Capitalize each word
-    return spacedName.replace(/\b\w/g, char => char.toUpperCase());
+  const filteredTemplates = templates.filter(t => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch =
+      t.displayName.toLowerCase().includes(q) ||
+      t.targetApp.toLowerCase().includes(q) ||
+      t.relativePath.toLowerCase().includes(q);
+    const matchesCategory = activeCategory === "All" || t.category === activeCategory;
+    return matchesSearch && matchesCategory;
+  });
+
+  const installedKey = (templateName: string) => {
+    return templateName.replace(/[^A-Za-z0-9]/g, "_");
+  };
+
+  const automationLabel = (level: string) => {
+    if (level === "auto") return "Auto";
+    if (level === "config-patch") return "Config";
+    return "Manual";
+  };
+
+  const automationColor = (level: string) => {
+    if (level === "auto") return "#8bd5a9";
+    if (level === "config-patch") return "#f5d37a";
+    return "#f2a7a7";
   };
 
   const handlePreview = async (template: TemplateInfo) => {
@@ -101,7 +125,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
     }
     
     setIsPreviewLoading(true);
-    setPreviewName(formatTemplateName(template.name));
+    setPreviewName(template.displayName);
     setPreviewContent(null);
     
     try {
@@ -119,12 +143,9 @@ export default function Templates({ schemeData }: TemplatesProps) {
   };
 
   const handleInstallClick = (template: TemplateInfo) => {
-    const tName = template.name.toString();
-    const config = getDefaultConfig(tName);
-    
     setInstallTemplate(template);
-    setOutputPath(config.outputPath);
-    setPostHook(config.postHook || "");
+    setOutputPath(template.defaultOutputPath || "");
+    setPostHook(template.defaultPostHook || "");
   };
 
   const submitInstall = async () => {
@@ -137,7 +158,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
         outputPath: outputPath,
         postHook: postHook
       });
-      alert(`Template ${installTemplate.name} installed successfully!`);
+      alert(`Template ${installTemplate.displayName} installed successfully!`);
       setInstallTemplate(null);
       fetchInstalled();
     } catch (err: any) {
@@ -148,7 +169,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
   };
 
   const handleUninstall = async (template: TemplateInfo) => {
-    if (confirm(`Are you sure you want to remove ${template.name} from your active templates?`)) {
+    if (confirm(`Are you sure you want to remove ${template.displayName} from your active templates?`)) {
       try {
         await invoke("uninstall_template", { templateName: template.name });
         fetchInstalled();
@@ -226,13 +247,22 @@ export default function Templates({ schemeData }: TemplatesProps) {
         <div className="modal-overlay" onClick={() => setInstallTemplate(null)}>
           <div className="modal-content" style={{ width: '90%', maxWidth: 500, display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>Install {formatTemplateName(installTemplate.name)}</h3>
+              <h3>Install {installTemplate.displayName}</h3>
               <X size={20} cursor="pointer" onClick={() => setInstallTemplate(null)} />
             </div>
             <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
               <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-                This will copy the template to your matugen templates directory and add it to <code>config.toml</code>.
+                This will copy <code>{installTemplate.relativePath}</code> to your matugen templates directory and add it to <code>config.toml</code>.
               </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <span className="template-badge">{installTemplate.category}</span>
+                <span className="template-badge" style={{ color: automationColor(installTemplate.automationLevel), borderColor: automationColor(installTemplate.automationLevel) }}>
+                  {automationLabel(installTemplate.automationLevel)}
+                </span>
+                {installTemplate.requiredCommands.map(cmd => (
+                  <span key={cmd} className="template-badge">needs {cmd}</span>
+                ))}
+              </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Output Path</label>
@@ -245,7 +275,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
                 />
               </div>
 
-              {installTemplate.name === "midnight-discord.css" && (
+              {installTemplate.relativePath.endsWith("midnight-discord.css") && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8, padding: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12 }}>
                   <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Select Discord Client</label>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -281,6 +311,15 @@ export default function Templates({ schemeData }: TemplatesProps) {
                   style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-hover)', color: 'var(--text-primary)' }}
                 />
               </div>
+
+              {installTemplate.manualSteps.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.035)' }}>
+                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Manual steps still needed</label>
+                  {installTemplate.manualSteps.map((step, idx) => (
+                    <span key={idx} style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>{idx + 1}. {step}</span>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="modal-actions" style={{ marginTop: 24 }}>
               <button className="btn btn-secondary" onClick={() => setInstallTemplate(null)}>Cancel</button>
@@ -295,7 +334,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2>Template Gallery</h2>
-          <p style={{ color: 'var(--text-secondary)' }}>Manage your application templates</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Manage bundled matugen templates and automation hints</p>
         </div>
         
         <div style={{ position: 'relative' }}>
@@ -316,6 +355,18 @@ export default function Templates({ schemeData }: TemplatesProps) {
             }} 
           />
         </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {categories.map(category => (
+          <button
+            key={category}
+            className={`btn btn-compact ${activeCategory === category ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setActiveCategory(category)}
+          >
+            {category}
+          </button>
+        ))}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16, overflowY: 'auto' }}>
@@ -340,19 +391,31 @@ export default function Templates({ schemeData }: TemplatesProps) {
                 <div style={{ background: 'var(--accent-transparent)', padding: 12, borderRadius: 12, color: 'var(--accent)' }}>
                   <LayoutTemplate size={24} />
                 </div>
-                <div>
-                  <h3 style={{ fontSize: 16, margin: 0 }}>{formatTemplateName(template.name)}</h3>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: 16, margin: 0 }}>{template.displayName}</h3>
                   <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {(template.size / 1024).toFixed(1)} KB • {template.name.toString().split('.').pop()?.toUpperCase()}
+                    {template.targetApp} • {(template.size / 1024).toFixed(1)} KB
                   </span>
                 </div>
               </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <span className="template-badge">{template.category}</span>
+                <span className="template-badge" style={{ color: automationColor(template.automationLevel), borderColor: automationColor(template.automationLevel) }}>
+                  {automationLabel(template.automationLevel)}
+                </span>
+                {!template.installable && <span className="template-badge">Asset</span>}
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {template.relativePath}
+              </span>
               <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
                 <button className="btn btn-secondary btn-compact" style={{ flex: 1 }} onClick={() => handlePreview(template)}>Preview</button>
-                {installedTemplates.has(template.name.toString().replace(/\./g, "_").replace(/-/g, "_")) ? (
+                {installedTemplates.has(installedKey(template.name)) ? (
                   <button className="btn btn-danger btn-compact" style={{ flex: 1 }} onClick={() => handleUninstall(template)}>Remove</button>
                 ) : (
-                  <button className="btn btn-primary btn-compact" style={{ flex: 1 }} onClick={() => handleInstallClick(template)}>Install</button>
+                  <button className="btn btn-primary btn-compact" style={{ flex: 1 }} disabled={!template.installable} onClick={() => handleInstallClick(template)}>
+                    {template.installable ? "Install" : "Guide"}
+                  </button>
                 )}
               </div>
             </div>

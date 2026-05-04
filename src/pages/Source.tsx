@@ -11,9 +11,14 @@ interface SourceProps {
 }
 
 interface ThumbnailProps {
-  imagePath: string;
   thumbnailPath: string | null;
   hasError: boolean;
+}
+
+interface ThumbnailResult {
+  imagePath: string;
+  thumbnailPath: string | null;
+  error: string | null;
 }
 
 interface CompactPaginationButtonProps {
@@ -23,8 +28,6 @@ interface CompactPaginationButtonProps {
   onClick: () => void;
   children: ReactNode;
 }
-
-const THUMBNAIL_CONCURRENCY = 4;
 
 const compactPaginationButtonStyle = (disabled: boolean): CSSProperties => ({
   height: 36,
@@ -57,7 +60,7 @@ const CompactPaginationButton = ({ label, title, disabled, onClick, children }: 
   </button>
 );
 
-const Thumbnail = ({ imagePath, thumbnailPath, hasError }: ThumbnailProps) => {
+const Thumbnail = ({ thumbnailPath, hasError }: ThumbnailProps) => {
   if (!thumbnailPath && !hasError) {
     return (
       <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#111' }}>
@@ -74,16 +77,17 @@ const Thumbnail = ({ imagePath, thumbnailPath, hasError }: ThumbnailProps) => {
     );
   }
 
-  const imageSrc = thumbnailPath ? convertFileSrc(thumbnailPath) : convertFileSrc(imagePath);
+  if (!thumbnailPath) {
+    return null;
+  }
 
   return (
     <img
-      src={imageSrc}
+      src={convertFileSrc(thumbnailPath)}
       alt="Wallpaper"
       loading="lazy"
       decoding="async"
-      onError={(e) => { e.currentTarget.src = convertFileSrc(imagePath); }}
-      style={{ width: '100%', height: '100%', objectFit: 'cover', animation: 'fadeIn 0.3s ease' }}
+      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
     />
   );
 };
@@ -173,18 +177,24 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
     setCurrentPage(1);
   }, [itemsPerPage]);
 
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+  const favoriteOrder = useMemo(
+    () => new Map(favorites.map((path, index) => [path, index])),
+    [favorites],
+  );
+
   const sortedWallpapers = useMemo(() => {
     return [...wallpapers].sort((a, b) => {
-      const aFav = favorites.includes(a);
-      const bFav = favorites.includes(b);
+      const aFav = favoriteSet.has(a);
+      const bFav = favoriteSet.has(b);
       if (aFav && !bFav) return -1;
       if (!aFav && bFav) return 1;
       if (aFav && bFav) {
-        return favorites.indexOf(a) - favorites.indexOf(b);
+        return (favoriteOrder.get(a) ?? 0) - (favoriteOrder.get(b) ?? 0);
       }
       return a.localeCompare(b);
     });
-  }, [wallpapers, favorites]);
+  }, [wallpapers, favoriteSet, favoriteOrder]);
 
   const page = useMemo(
     () => getWallpaperPage(sortedWallpapers, currentPage, itemsPerPage),
@@ -213,40 +223,62 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
       }
       return next;
     });
-  };
 
-  const runThumbnailQueue = async (paths: string[], generation: number, updateLoading: boolean) => {
-    let cursor = 0;
-
-    const worker = async () => {
-      while (cursor < paths.length && pageGenerationRef.current === generation) {
-        const path = paths[cursor];
-        cursor += 1;
-
-        if (thumbnailCacheRef.current.has(path)) {
-          continue;
-        }
-
-        try {
-          const thumbPath = await invoke<string>('generate_thumbnail', { imagePath: path });
-          if (pageGenerationRef.current !== generation) {
-            return;
-          }
-          thumbnailCacheRef.current.set(path, thumbPath);
-          setThumbnailPaths(prev => ({ ...prev, [path]: thumbPath }));
-        } catch (e) {
-          if (pageGenerationRef.current === generation) {
-            console.error("Failed to generate thumbnail", e);
-            setThumbnailErrors(prev => ({ ...prev, [path]: true }));
-          }
+    setThumbnailErrors(prev => {
+      const next: Record<string, boolean> = {};
+      for (const [path, failed] of Object.entries(prev)) {
+        if (allowedPaths.has(path)) {
+          next[path] = failed;
         }
       }
-    };
+      return next;
+    });
+  };
 
-    await Promise.all(Array.from({ length: Math.min(THUMBNAIL_CONCURRENCY, paths.length) }, worker));
+  const loadThumbnails = async (paths: string[], generation: number) => {
+    try {
+      const results = await invoke<ThumbnailResult[]>('generate_thumbnails', { imagePaths: paths });
+      if (pageGenerationRef.current !== generation) {
+        return;
+      }
 
-    if (updateLoading && pageGenerationRef.current === generation) {
-      setIsLoadingPage(false);
+      const nextPaths: Record<string, string> = {};
+      const nextErrors: Record<string, boolean> = {};
+
+      for (const result of results) {
+        if (result.thumbnailPath) {
+          thumbnailCacheRef.current.set(result.imagePath, result.thumbnailPath);
+          nextPaths[result.imagePath] = result.thumbnailPath;
+        } else {
+          if (result.error) {
+            console.error("Failed to generate thumbnail", result.error);
+          }
+          nextErrors[result.imagePath] = true;
+        }
+      }
+
+      if (Object.keys(nextPaths).length > 0) {
+        setThumbnailPaths(prev => ({ ...prev, ...nextPaths }));
+      }
+
+      if (Object.keys(nextErrors).length > 0) {
+        setThumbnailErrors(prev => ({ ...prev, ...nextErrors }));
+      }
+    } catch (e) {
+      if (pageGenerationRef.current === generation) {
+        console.error("Failed to generate thumbnails", e);
+        setThumbnailErrors(prev => {
+          const next = { ...prev };
+          paths.forEach(path => {
+            next[path] = true;
+          });
+          return next;
+        });
+      }
+    } finally {
+      if (pageGenerationRef.current === generation) {
+        setIsLoadingPage(false);
+      }
     }
   };
 
@@ -254,11 +286,9 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
     const generation = ++pageGenerationRef.current;
     const currentPageItems = page.items;
     const previousPageItems = getWallpaperPage(sortedWallpapers, page.currentPage - 1, itemsPerPage).items;
-    const nextPageItems = getWallpaperPage(sortedWallpapers, page.currentPage + 1, itemsPerPage).items;
-    const cachedWindow = new Set([...previousPageItems, ...currentPageItems, ...nextPageItems]);
+    const cachedWindow = new Set([...previousPageItems, ...currentPageItems]);
 
     pruneThumbnailCache(cachedWindow);
-    setThumbnailErrors({});
 
     if (currentPageItems.length === 0) {
       setIsLoadingPage(false);
@@ -279,12 +309,9 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
 
     const missingCurrentPage = currentPageItems.filter(path => !thumbnailCacheRef.current.has(path));
     setIsLoadingPage(missingCurrentPage.length > 0);
-    void runThumbnailQueue(missingCurrentPage, generation, true).then(() => {
-      if (pageGenerationRef.current === generation && nextPageItems.length > 0) {
-        const missingNextPage = nextPageItems.filter(path => !thumbnailCacheRef.current.has(path));
-        void runThumbnailQueue(missingNextPage, generation, false);
-      }
-    });
+    if (missingCurrentPage.length > 0) {
+      void loadThumbnails(missingCurrentPage, generation);
+    }
   }, [page.currentPage, page.items, sortedWallpapers, itemsPerPage]);
 
   const selectFolder = async () => {
@@ -463,7 +490,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
             }}
           >
             {page.items.map((path) => {
-              const isFav = favorites.includes(path);
+              const isFav = favoriteSet.has(path);
               return (
                 <div key={path} className="template-card" style={{
                   background: 'var(--surface)',
@@ -481,7 +508,6 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                       style={{
                         padding: 0,
                         background: 'rgba(0,0,0,0.5)',
-                        backdropFilter: 'blur(4px)',
                         border: '1px solid rgba(255,255,255,0.1)',
                         color: '#fff',
                       }}
@@ -495,7 +521,6 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                       style={{
                         padding: 0,
                         background: 'rgba(0,0,0,0.5)',
-                        backdropFilter: 'blur(4px)',
                         border: '1px solid rgba(255,255,255,0.1)',
                         color: isFav ? '#ffd700' : '#fff',
                       }}
@@ -506,7 +531,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                     </button>
                   </div>
                   <div style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
-                    <Thumbnail imagePath={path} thumbnailPath={thumbnailPaths[path] ?? null} hasError={Boolean(thumbnailErrors[path])} />
+                    <Thumbnail thumbnailPath={thumbnailPaths[path] ?? null} hasError={Boolean(thumbnailErrors[path])} />
                   </div>
                   <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
                     <button className="btn btn-secondary btn-compact" style={{ width: '100%' }} onClick={() => applyWallpaperOnly(path)} title="Sets the wallpaper in KDE only">
@@ -550,11 +575,6 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
 
       <style>
         {`
-          @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-          }
-
           @media (max-width: 520px) {
             .pagination-button-label {
               display: none;

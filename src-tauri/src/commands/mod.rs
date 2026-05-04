@@ -1,5 +1,6 @@
 pub mod color;
-pub mod template;
 pub mod desktop;
-pub mod preset;
+pub mod gtk;
 pub mod kde;
+pub mod preset;
+pub mod template;
