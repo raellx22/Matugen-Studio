@@ -11,6 +11,20 @@ The first release focuses on KDE Plasma, with support for:
 - bundled Matugen templates for supported apps
 - a KDE wallpaper watch service for automatic recoloring
 
+## Credits
+
+Matugen Studio exists because of the work behind
+[matugen](https://github.com/InioX/matugen), created by
+[InioX](https://github.com/InioX). Matugen is the color generation and
+templating engine that makes this project possible.
+
+Huge thanks to InioX and everyone involved in the Matugen ecosystem. The Linux
+ricing community has benefited a lot from that work, and this app is built as a
+GUI-focused companion to make Matugen easier to use, especially for KDE Plasma
+workflows.
+
+Development assistance for this release was provided with OpenAI Codex.
+
 ## Build
 
 ```bash
