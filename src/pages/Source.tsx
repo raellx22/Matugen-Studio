@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { ChevronLeft, ChevronRight, FolderOpen, Monitor, Palette, Shuffle, Star } from 'lucide-react';
@@ -93,6 +94,7 @@ const Thumbnail = ({ thumbnailPath, hasError }: ThumbnailProps) => {
 };
 
 export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForColors }: SourceProps) {
+  const { t } = useTranslation();
   const [monitorCount, setMonitorCount] = useState(1);
   const [multiMonitorEnabled, setMultiMonitorEnabled] = useState(localStorage.getItem('multiMonitorEnabled') === 'true');
   const [activeMonitor, setActiveMonitor] = useState(-1);
@@ -375,10 +377,10 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            Wallpaper Source
+            {t('source.title')}
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: 13, wordBreak: 'break-all' }}>
-            {currentFolder ? currentFolder : "Select a folder to load your wallpapers"}
+            {currentFolder ? currentFolder : t('source.selectFolderSubtitle')}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
@@ -405,7 +407,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
               className={`btn ${activeMonitor === -1 ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setActiveMonitor(-1)}
             >
-              Global (All)
+              {t('source.globalAll')}
             </button>
             {Array.from({ length: monitorCount }).map((_, idx) => (
               <button
@@ -413,13 +415,13 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                 className={`btn ${activeMonitor === idx ? 'btn-primary' : 'btn-secondary'}`}
                 onClick={() => setActiveMonitor(idx)}
               >
-                Monitor {idx + 1}
+                {t('source.monitorPrefix')} {idx + 1}
               </button>
             ))}
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, borderLeft: '1px solid var(--border)', paddingLeft: 24 }}>
-            <span style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>Main Color Monitor:</span>
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{t('source.mainColorMonitor')}</span>
             <select
               value={mainColorMonitor}
               onChange={(e) => {
@@ -430,7 +432,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
               style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
             >
               {Array.from({ length: monitorCount }).map((_, idx) => (
-                <option key={idx} value={idx}>Monitor {idx + 1}</option>
+                <option key={idx} value={idx}>{t('source.monitorPrefix')} {idx + 1}</option>
               ))}
             </select>
           </div>
@@ -442,18 +444,18 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
           {favorites.length > 0 && (
             <button className="btn btn-secondary" onClick={pickRandomFavorite}>
               <Shuffle size={18} />
-              Shuffle Favorites
+              {t('source.shuffleFavorites')}
             </button>
           )}
           {currentFolder && sortedWallpapers.length > 0 && (
             <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-              {page.totalItems} wallpapers found - {itemsPerPage} per page
+              {t('source.wallpapersFound', { count: page.totalItems, perPage: itemsPerPage })}
             </span>
           )}
         </div>
         <button className="btn btn-secondary" onClick={selectFolder}>
           <FolderOpen size={18} />
-          {currentFolder ? "Change Folder" : "Select Folder"}
+          {currentFolder ? t('source.changeFolder') : t('source.selectFolder')}
         </button>
       </div>
 
@@ -461,21 +463,21 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
         <div className="drop-zone" onClick={selectFolder} style={{ cursor: 'pointer', flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: 16, border: '2px dashed var(--border)', background: 'var(--surface)' }}>
           <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
             <FolderOpen size={48} color="var(--accent)" />
-            <p style={{ margin: 0, fontSize: 18, color: 'var(--text-secondary)' }}>Select a folder for {activeMonitor === -1 ? 'Global' : `Monitor ${activeMonitor + 1}`}</p>
-            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', opacity: 0.7 }}>Only the current page is loaded into the gallery</p>
+            <p style={{ margin: 0, fontSize: 18, color: 'var(--text-secondary)' }}>{t('source.selectFolderFor', { target: activeMonitor === -1 ? t('source.globalAll') : `${t('source.monitorPrefix')} ${activeMonitor + 1}` })}</p>
+            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', opacity: 0.7 }}>{t('source.onlyCurrentPageLoaded')}</p>
           </div>
         </div>
       ) : isScanningSource ? (
         <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-          <p>Scanning wallpaper source...</p>
+          <p>{t('source.scanningSource')}</p>
         </div>
       ) : sortedWallpapers.length === 0 ? (
-        <p>No wallpapers found in this directory. Only JPG, PNG and WEBP are supported.</p>
+        <p>{t('source.noWallpapersFound')}</p>
       ) : (
         <>
           {isLoadingPage && (
             <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-              Loading thumbnails for page {page.currentPage}...
+              {t('source.loadingThumbnails', { page: page.currentPage })}
             </div>
           )}
           <div
@@ -512,7 +514,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                         color: '#fff',
                       }}
                       onClick={() => onSelectForColors(path)}
-                      title="Load colors into Editor"
+                      title={t('source.loadColors')}
                     >
                       <Palette size={18} />
                     </button>
@@ -525,7 +527,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                         color: isFav ? '#ffd700' : '#fff',
                       }}
                       onClick={() => toggleFavorite(path)}
-                      title="Toggle Favorite"
+                      title={t('source.toggleFavorite')}
                     >
                       <Star size={18} fill={isFav ? '#ffd700' : 'none'} />
                     </button>
@@ -535,10 +537,10 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                   </div>
                   <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
                     <button className="btn btn-secondary btn-compact" style={{ width: '100%' }} onClick={() => applyWallpaperOnly(path)} title="Sets the wallpaper in KDE only">
-                      Apply Only (KDE)
+                      {t('source.applyOnly')}
                     </button>
                     <button className="btn btn-primary btn-compact" style={{ width: '100%' }} onClick={() => handleApplyAndGenerate(path)} title="Sets wallpaper, generates colors, and updates all templates">
-                      Apply & Generate
+                      {t('source.applyAndGenerate')}
                     </button>
                   </div>
                 </div>
@@ -548,24 +550,24 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
           <div style={{ padding: '12px 16px 0', display: 'flex', justifyContent: 'center' }}>
             <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 12, maxWidth: '100%', flexWrap: 'nowrap' }}>
               <CompactPaginationButton
-                label="Página anterior"
-                title="Página anterior"
+                label={t('source.previousPage')}
+                title={t('source.previousPage')}
                 disabled={page.currentPage <= 1 || isScanningSource}
                 onClick={() => goToPage(page.currentPage - 1)}
               >
                 <ChevronLeft size={16} />
-                <span className="pagination-button-label">Anterior</span>
+                <span className="pagination-button-label">{t('source.previous')}</span>
               </CompactPaginationButton>
               <div style={{ color: 'var(--text-secondary)', fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', minWidth: 112, textAlign: 'center' }}>
-                Página {page.currentPage} de {page.totalPages}
+                {t('source.pageOf', { current: page.currentPage, total: page.totalPages })}
               </div>
               <CompactPaginationButton
-                label="Próxima página"
-                title="Próxima página"
+                label={t('source.nextPage')}
+                title={t('source.nextPage')}
                 disabled={page.currentPage >= page.totalPages || isScanningSource}
                 onClick={() => goToPage(page.currentPage + 1)}
               >
-                <span className="pagination-button-label">Próxima</span>
+                <span className="pagination-button-label">{t('source.next')}</span>
                 <ChevronRight size={16} />
               </CompactPaginationButton>
             </div>

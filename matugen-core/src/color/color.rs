@@ -109,34 +109,55 @@ impl OwnCustomColor {
     }
 }
 
+pub fn get_luminance(color: &Argb) -> f64 {
+    if color.red == 0 && color.green == 0 && color.blue == 0 {
+        return 0.0;
+    }
+    let r = color.red as f64 / 255.0;
+    let g = color.green as f64 / 255.0;
+    let b = color.blue as f64 / 255.0;
+    f64::sqrt(0.299 * r.powi(2) + 0.587 * g.powi(2) + 0.114 * b.powi(2))
+}
+
 pub fn adjust_color_lightness_dark(color: Argb, lightness_level_dark: &Option<f64>) -> Argb {
-    // If lightness values were plotted on a graph, the effect of this function is to rotate the line corresponding to the identity function about x = 255 and y = 255 by setting the value at x = 0 to -lightness_level*255 and then clamping the values to between 0 and 255.
-    let pre_lightness_level =
-        ((color.red as f64) + (color.green as f64) + (color.blue as f64)) / 3.0;
-    let adj = (pre_lightness_level / 255.0 * (1.0 - lightness_level_dark.unwrap_or(0.0))
-        + lightness_level_dark.unwrap_or(0.0))
-        / pre_lightness_level
-        * 255.0;
+    let level = lightness_level_dark.unwrap_or(0.0);
+    if level == 0.0 {
+        return color;
+    }
+    let luminance = get_luminance(&color);
+    if luminance == 0.0 {
+        return color;
+    }
+
+    let offset = level * 0.3;
+    let scale = (luminance + offset) / luminance;
+
     Argb::new(
         color.alpha,
-        (color.red as f64 * adj).clamp(0.0, 255.0) as u8,
-        (color.green as f64 * adj).clamp(0.0, 255.0) as u8,
-        (color.blue as f64 * adj).clamp(0.0, 255.0) as u8,
+        (color.red as f64 * scale).clamp(0.0, 255.0) as u8,
+        (color.green as f64 * scale).clamp(0.0, 255.0) as u8,
+        (color.blue as f64 * scale).clamp(0.0, 255.0) as u8,
     )
 }
 
 pub fn adjust_color_lightness_light(color: Argb, lightness_level_light: &Option<f64>) -> Argb {
-    // If lightness values were plotted on a graph, the effect of this function is to rotate the line corresponding to the identity function about x = 0 and y = 0 by setting the value at x = 255 to 255+lightness_level*255 and then clamping the values to between 0 and 255.
-    let pre_lightness_level =
-        ((color.red as f64) + (color.green as f64) + (color.blue as f64)) / 3.0;
-    let adj = pre_lightness_level / 255.0 * (1.0 + lightness_level_light.unwrap_or(0.0))
-        / pre_lightness_level
-        * 255.0;
+    let level = lightness_level_light.unwrap_or(0.0);
+    if level == 0.0 {
+        return color;
+    }
+    let luminance = get_luminance(&color);
+    if luminance == 0.0 {
+        return color;
+    }
+
+    let offset = level * 0.3;
+    let scale = (luminance + offset) / luminance;
+
     Argb::new(
         color.alpha,
-        (color.red as f64 * adj).clamp(0.0, 255.0) as u8,
-        (color.green as f64 * adj).clamp(0.0, 255.0) as u8,
-        (color.blue as f64 * adj).clamp(0.0, 255.0) as u8,
+        (color.red as f64 * scale).clamp(0.0, 255.0) as u8,
+        (color.green as f64 * scale).clamp(0.0, 255.0) as u8,
+        (color.blue as f64 * scale).clamp(0.0, 255.0) as u8,
     )
 }
 
@@ -198,9 +219,13 @@ pub fn get_source_color_from_image(
         .collect();
     let mut result = QuantizerCelebi::quantize(&pixels, 128);
 
+    let original_color_to_count = result.color_to_count.clone();
     result
         .color_to_count
         .retain(|&argb, _| Cam16::from(argb).chroma >= 5.0);
+    if result.color_to_count.is_empty() {
+        result.color_to_count = original_color_to_count;
+    }
 
     let ranked = Score::score(&result.color_to_count, None, fallback_color, None);
 

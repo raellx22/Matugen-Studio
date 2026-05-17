@@ -15,6 +15,8 @@ pub struct KdeServiceStatus {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
+    pub run_in_background: bool,
+    #[serde(default)]
     pub current_wallpaper: Option<String>,
     #[serde(default = "default_poll_interval_secs")]
     pub poll_interval_secs: u64,
@@ -30,6 +32,7 @@ impl Default for KdeServiceStatus {
     fn default() -> Self {
         Self {
             enabled: false,
+            run_in_background: false,
             current_wallpaper: None,
             poll_interval_secs: default_poll_interval_secs(),
             scheme_type: default_scheme_type(),
@@ -54,6 +57,7 @@ pub struct KdeWatcherOptions {
 #[serde(rename_all = "camelCase")]
 pub struct KdeWatcherSnapshot {
     pub enabled: bool,
+    pub run_in_background: bool,
     pub current_wallpaper: Option<String>,
     pub last_handled_wallpaper: Option<String>,
     pub is_processing: bool,
@@ -91,6 +95,7 @@ impl Default for KdeWatcherSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
+            run_in_background: false,
             current_wallpaper: None,
             last_handled_wallpaper: None,
             is_processing: false,
@@ -109,7 +114,7 @@ fn default_poll_interval_secs() -> u64 {
 }
 
 fn default_scheme_type() -> String {
-    "Content".to_string()
+    "Tinted Smart".to_string()
 }
 
 fn default_gtk_dark() -> bool {
@@ -839,6 +844,7 @@ pub async fn stop_kde_wallpaper_watcher(
 
     persist_service_status(&KdeServiceStatus {
         enabled: false,
+        run_in_background: snapshot.run_in_background,
         current_wallpaper: snapshot.last_handled_wallpaper.clone(),
         poll_interval_secs: snapshot.poll_interval_secs,
         scheme_type: snapshot.scheme_type.clone(),
@@ -867,6 +873,7 @@ pub async fn get_kde_wallpaper_watcher_status(
     let mut next = snapshot;
     next.poll_interval_secs = persisted.poll_interval_secs;
     next.scheme_type = persisted.scheme_type;
+    next.run_in_background = persisted.run_in_background;
     next.last_handled_wallpaper = persisted.current_wallpaper;
     next.gtk_enabled = persisted.gtk_enabled;
     next.gtk_dark = persisted.gtk_dark;
@@ -897,6 +904,7 @@ pub async fn mark_kde_wallpaper_handled(
     let snapshot = current_watcher_snapshot(&app).await;
     persist_service_status(&KdeServiceStatus {
         enabled: snapshot.enabled,
+        run_in_background: snapshot.run_in_background,
         current_wallpaper: snapshot.last_handled_wallpaper.clone(),
         poll_interval_secs: snapshot.poll_interval_secs,
         scheme_type: snapshot.scheme_type.clone(),
@@ -922,6 +930,35 @@ pub fn restore_kde_wallpaper_watcher(app: tauri::AppHandle) {
             let _ = start_kde_wallpaper_watcher_inner(app, options, status.current_wallpaper).await;
         }
     });
+}
+
+#[tauri::command]
+pub async fn set_kde_run_in_background(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<KdeWatcherSnapshot, String> {
+    update_watcher_snapshot(&app, |snapshot| {
+        snapshot.run_in_background = enabled;
+    })
+    .await;
+
+    let snapshot = current_watcher_snapshot(&app).await;
+    persist_service_status(&KdeServiceStatus {
+        enabled: snapshot.enabled,
+        run_in_background: snapshot.run_in_background,
+        current_wallpaper: snapshot.last_handled_wallpaper.clone(),
+        poll_interval_secs: snapshot.poll_interval_secs,
+        scheme_type: snapshot.scheme_type.clone(),
+        gtk_enabled: snapshot.gtk_enabled,
+        gtk_dark: snapshot.gtk_dark,
+    })?;
+    Ok(snapshot)
+}
+
+pub fn should_run_in_background() -> bool {
+    read_service_status()
+        .map(|status| status.run_in_background)
+        .unwrap_or(false)
 }
 
 async fn start_kde_wallpaper_watcher_inner(
@@ -951,6 +988,7 @@ async fn start_kde_wallpaper_watcher_inner(
         }
 
         inner.snapshot.enabled = true;
+        inner.snapshot.run_in_background = should_run_in_background();
         inner.snapshot.is_processing = false;
         inner.snapshot.poll_interval_secs = poll_interval_secs;
         inner.snapshot.scheme_type = scheme_type.clone();
@@ -977,6 +1015,7 @@ async fn start_kde_wallpaper_watcher_inner(
 
     persist_service_status(&KdeServiceStatus {
         enabled: true,
+        run_in_background: snapshot.run_in_background,
         current_wallpaper: snapshot.last_handled_wallpaper.clone(),
         poll_interval_secs: snapshot.poll_interval_secs,
         scheme_type: snapshot.scheme_type.clone(),
@@ -1116,6 +1155,7 @@ async fn process_wallpaper_change(
     let snapshot = current_watcher_snapshot(app).await;
     let _ = persist_service_status(&KdeServiceStatus {
         enabled: snapshot.enabled,
+        run_in_background: snapshot.run_in_background,
         current_wallpaper: snapshot.last_handled_wallpaper,
         poll_interval_secs: snapshot.poll_interval_secs,
         scheme_type: snapshot.scheme_type,

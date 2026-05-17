@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -22,11 +23,13 @@ interface KdeIntegrationProps {
   gtkThemeDark: boolean;
   onGtkThemeEnabledChange: (enabled: boolean) => void;
   onGtkThemeDarkChange: (dark: boolean) => void;
-  onGenerateFromWallpaper: (path: string) => Promise<any>;
+  onGenerateFromWallpaper: (path: string) => Promise<{ raw: any; kde: any; effectiveDark: boolean }>;
+  onNotify?: (message: string, tone?: "success" | "error" | "info") => void;
 }
 
 interface KdeWatcherSnapshot {
   enabled: boolean;
+  runInBackground: boolean;
   currentWallpaper: string | null;
   lastHandledWallpaper: string | null;
   isProcessing: boolean;
@@ -52,8 +55,11 @@ export default function KdeIntegration({
   onGtkThemeEnabledChange,
   onGtkThemeDarkChange,
   onGenerateFromWallpaper,
+  onNotify,
 }: KdeIntegrationProps) {
+  const { t } = useTranslation();
   const [serviceEnabled, setServiceEnabled] = useState(false);
+  const [runInBackground, setRunInBackground] = useState(false);
   const [currentKdeWallpaper, setCurrentKdeWallpaper] = useState<string | null>(null);
   const [isApplyingScheme, setIsApplyingScheme] = useState(false);
   const [schemeApplied, setSchemeApplied] = useState(false);
@@ -117,6 +123,7 @@ export default function KdeIntegration({
 
   const applyWatcherSnapshot = (snapshot: KdeWatcherSnapshot) => {
     setServiceEnabled(snapshot.enabled);
+    setRunInBackground(snapshot.runInBackground);
     setCurrentKdeWallpaper(snapshot.currentWallpaper);
     setServiceProcessing(snapshot.isProcessing);
     setPollInterval(snapshot.pollIntervalSecs);
@@ -138,18 +145,34 @@ export default function KdeIntegration({
     try {
       if (!serviceEnabled) {
         await startWatcher();
+        onNotify?.("Wallpaper watch service started.", "success");
       } else {
         const status = await invoke<KdeWatcherSnapshot>("stop_kde_wallpaper_watcher");
         applyWatcherSnapshot(status);
+        onNotify?.("Wallpaper watch service stopped.", "info");
       }
     } catch (e) {
-      alert("Failed to update service: " + e);
+      onNotify?.("Failed to update service: " + e, "error");
+    }
+  };
+
+  const toggleRunInBackground = async (enabled: boolean) => {
+    setServiceError(null);
+    try {
+      const status = await invoke<KdeWatcherSnapshot>("set_kde_run_in_background", { enabled });
+      applyWatcherSnapshot(status);
+      onNotify?.(
+        enabled ? t('desktop.backgroundEnabledToast') : t('desktop.backgroundDisabledToast'),
+        "info",
+      );
+    } catch (e) {
+      onNotify?.("Failed to update background option: " + e, "error");
     }
   };
 
   const applyKdeScheme = async () => {
     if (!schemeData) {
-      alert("Generate a color palette first from the Colors or Source tab.");
+      onNotify?.("Generate a color palette first from the Colors or Source tab.", "error");
       return;
     }
 
@@ -159,9 +182,10 @@ export default function KdeIntegration({
       await invoke("apply_kde_colorscheme", { context: schemeData });
       setSchemeApplied(true);
       setStatusMessage("KDE color scheme applied successfully.");
+      onNotify?.("KDE color scheme applied.", "success");
       setTimeout(() => setSchemeApplied(false), 3000);
     } catch (e) {
-      alert("Failed to apply KDE color scheme: " + e);
+      onNotify?.("Failed to apply KDE color scheme: " + e, "error");
     } finally {
       setIsApplyingScheme(false);
     }
@@ -169,29 +193,31 @@ export default function KdeIntegration({
 
   const generateAndApply = async () => {
     if (!currentKdeWallpaper) {
-      alert("No wallpaper detected on KDE desktop.");
+      onNotify?.("No wallpaper detected on KDE desktop.", "error");
       return;
     }
 
     setIsApplyingScheme(true);
     try {
-      const data = await onGenerateFromWallpaper(currentKdeWallpaper);
+      const { raw, kde, effectiveDark } = await onGenerateFromWallpaper(currentKdeWallpaper);
       setStatusMessage("Colors generated. Applying desktop themes...");
       const tasks: Promise<any>[] = [
-        invoke("apply_theme", { context: data }),
-        invoke("apply_kde_colorscheme", { context: data }),
+        invoke("apply_theme", { context: raw }),
+        invoke("apply_kde_colorscheme", { context: kde }),
       ];
       if (gtkThemeEnabled) {
-        tasks.push(invoke("apply_gtk_theme", { context: data, dark: gtkThemeDark }));
+        onGtkThemeDarkChange(effectiveDark);
+        tasks.push(invoke("apply_gtk_theme", { context: raw, dark: effectiveDark }));
       }
       const results = await Promise.allSettled(tasks);
       const failed = results.find((result) => result.status === "rejected");
       if (failed && failed.status === "rejected") throw failed.reason;
       setStatusMessage("Theme generated and applied from current wallpaper.");
       setSchemeApplied(true);
+      onNotify?.("Theme generated from current KDE wallpaper.", "success");
       setTimeout(() => setSchemeApplied(false), 3000);
     } catch (e) {
-      alert("Failed to generate colors: " + e);
+      onNotify?.("Failed to generate colors: " + e, "error");
     } finally {
       setIsApplyingScheme(false);
     }
@@ -199,7 +225,7 @@ export default function KdeIntegration({
 
   const applyGtkTheme = async (dark: boolean) => {
     if (!schemeData) {
-      alert("Generate a color palette first from the Colors or Source tab.");
+      onNotify?.("Generate a color palette first from the Colors or Source tab.", "error");
       return;
     }
 
@@ -211,10 +237,14 @@ export default function KdeIntegration({
       setGtkAppliedTheme(result.themeName);
       setStatusMessage(`GTK theme applied: ${result.themeName}`);
       const warningText = result.warnings.filter(Boolean).join("\n");
-      if (warningText) alert(`GTK theme generated with warnings:\n${warningText}`);
+      if (warningText) {
+        onNotify?.(`GTK theme generated with warnings: ${warningText}`, "info");
+      } else {
+        onNotify?.(`GTK theme applied: ${result.themeName}`, "success");
+      }
       setTimeout(() => setGtkAppliedTheme(null), 3000);
     } catch (e) {
-      alert("Failed to apply GTK theme: " + e);
+      onNotify?.("Failed to apply GTK theme: " + e, "error");
     } finally {
       setIsApplyingGtk(false);
     }
@@ -224,8 +254,8 @@ export default function KdeIntegration({
     <div className="desktop-page">
       <div className="desktop-header">
         <div>
-          <h2>KDE Plasma Integration</h2>
-          <p>Wallpaper monitoring, KDE colors, and GTK theme sync.</p>
+          <h2>{t('desktop.title')}</h2>
+          <p>{t('desktop.subtitle')}</p>
         </div>
       </div>
 
@@ -233,9 +263,9 @@ export default function KdeIntegration({
         <section className="card desktop-card">
           <div className="desktop-card-title">
             <Monitor size={20} />
-            <h3>Current KDE Wallpaper</h3>
+            <h3>{t('desktop.currentKdeWallpaper')}</h3>
             <button className="btn btn-secondary btn-compact" onClick={fetchCurrentWallpaper}>
-              <RefreshCw size={14} /> Refresh
+              <RefreshCw size={14} /> {t('desktop.refresh')}
             </button>
           </div>
 
@@ -244,7 +274,7 @@ export default function KdeIntegration({
           ) : (
             <div className="desktop-warning">
               <AlertCircle size={14} />
-              Could not detect current wallpaper
+              {t('desktop.noWallpaperDetected')}
             </div>
           )}
 
@@ -254,17 +284,17 @@ export default function KdeIntegration({
             onClick={generateAndApply}
           >
             {isApplyingScheme ? <Loader2 size={16} className="spinning" /> : <Palette size={16} />}
-            Generate from Current Wallpaper
+            {t('desktop.generateFromCurrent')}
           </button>
         </section>
 
         <section className="card desktop-card">
           <div className="desktop-card-title">
             <Palette size={20} />
-            <h3>KDE Color Scheme</h3>
+            <h3>{t('desktop.kdeColorScheme')}</h3>
           </div>
           <p className="desktop-card-copy">
-            Generate and apply <code>MatugenStudio.colors</code> for Qt/KDE apps, window decorations, menus, and Plasma surfaces.
+            {t('desktop.kdeColorDesc')}
           </p>
           <button className="btn btn-primary" disabled={!schemeData || isApplyingScheme} onClick={applyKdeScheme}>
             {isApplyingScheme ? (
@@ -274,30 +304,42 @@ export default function KdeIntegration({
             ) : (
               <Palette size={16} />
             )}
-            {schemeApplied ? "Applied" : "Apply KDE Color Scheme"}
+            {schemeApplied ? t('desktop.applied') : t('desktop.applyKdeScheme')}
           </button>
         </section>
 
         <section className="card desktop-card">
           <div className="desktop-card-title">
             {serviceEnabled ? <Eye size={20} /> : <EyeOff size={20} />}
-            <h3>Wallpaper Watch Service</h3>
+            <h3>{t('desktop.watcherService')}</h3>
           </div>
           <p className="desktop-card-copy">
-            Backend watcher monitors KDE wallpaper changes and reapplies Matugen themes without a frontend timer.
+            {t('desktop.watcherDesc')}
           </p>
           <div className="desktop-inline-controls">
             <button className={`btn ${serviceEnabled ? "btn-secondary" : "btn-primary"}`} onClick={toggleService}>
               {serviceEnabled ? <Square size={16} /> : serviceProcessing ? <Loader2 size={16} className="spinning" /> : <Play size={16} />}
-              {serviceEnabled ? "Stop Service" : "Start Service"}
+              {serviceEnabled ? t('desktop.stopService') : t('desktop.startService')}
             </button>
             <select value={pollInterval} onChange={(e) => setPollInterval(parseInt(e.target.value))}>
-              <option value={5}>5 seconds</option>
-              <option value={10}>10 seconds</option>
-              <option value={30}>30 seconds</option>
-              <option value={60}>1 minute</option>
+              <option value={5}>{t('desktop.seconds_5')}</option>
+              <option value={10}>{t('desktop.seconds_10')}</option>
+              <option value={30}>{t('desktop.seconds_30')}</option>
+              <option value={60}>{t('desktop.minute_1')}</option>
             </select>
           </div>
+
+          <label className="desktop-toggle">
+            <input
+              type="checkbox"
+              checked={runInBackground}
+              onChange={(event) => toggleRunInBackground(event.target.checked)}
+            />
+            <span>{t('desktop.runInBackground')}</span>
+          </label>
+          <p className="desktop-card-copy">
+            {t('desktop.runInBackgroundDesc')}
+          </p>
 
           {statusMessage && (
             <div className={`desktop-status ${serviceError ? "is-error" : serviceEnabled ? "is-on" : ""}`}>
@@ -311,10 +353,10 @@ export default function KdeIntegration({
         <section className="card desktop-card">
           <div className="desktop-card-title">
             <Palette size={20} />
-            <h3>GTK Theme</h3>
+            <h3>{t('desktop.gtkTheme')}</h3>
           </div>
           <p className="desktop-card-copy">
-            Generate a full adw-gtk3 based theme for GTK 3, GTK 4, and libadwaita apps.
+            {t('desktop.gtkDesc')}
           </p>
 
           <label className="desktop-toggle">
@@ -323,7 +365,7 @@ export default function KdeIntegration({
               checked={gtkThemeEnabled}
               onChange={(event) => onGtkThemeEnabledChange(event.target.checked)}
             />
-            <span>Apply GTK automatically when colors are generated</span>
+            <span>{t('desktop.applyGtkAuto')}</span>
           </label>
 
           <div className="desktop-segment">
@@ -332,14 +374,14 @@ export default function KdeIntegration({
               onClick={() => onGtkThemeDarkChange(false)}
               type="button"
             >
-              Light
+              {t('desktop.light')}
             </button>
             <button
               className={gtkThemeDark ? "active" : ""}
               onClick={() => onGtkThemeDarkChange(true)}
               type="button"
             >
-              Dark
+              {t('desktop.dark')}
             </button>
           </div>
 
@@ -349,10 +391,10 @@ export default function KdeIntegration({
             onClick={() => applyGtkTheme(gtkThemeDark)}
           >
             {isApplyingGtk ? <Loader2 size={16} className="spinning" /> : <Palette size={16} />}
-            Apply GTK Theme
+            {t('desktop.applyGtkTheme')}
           </button>
 
-          {gtkAppliedTheme && <div className="desktop-status is-on">{gtkAppliedTheme} applied.</div>}
+          {gtkAppliedTheme && <div className="desktop-status is-on">{t('desktop.gtkApplied', { name: gtkAppliedTheme })}</div>}
         </section>
       </div>
     </div>

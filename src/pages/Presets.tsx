@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { Layers, Trash2, Check, Download, Palette, Monitor, Share2, Upload, Package, Sun, Moon } from "lucide-react";
@@ -81,6 +82,7 @@ export default function Presets({
   currentMode,
   onApplyPreset,
 }: PresetsProps) {
+  const { t } = useTranslation();
   const [presets, setPresets] = useState<PresetV2[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -150,8 +152,8 @@ export default function Presets({
 
   const handleDeletePreset = async (name: string) => {
     try {
-      const confirmed = await confirm(`Are you sure you want to delete the preset '${name}'?`, {
-        title: "Delete Preset",
+      const confirmed = await confirm(t('presets.deleteConfirm', { name }), {
+        title: t('presets.deleteTitle'),
         kind: "warning",
       });
       if (!confirmed) return;
@@ -220,18 +222,18 @@ export default function Presets({
     <div className="tab-content" style={{ display: "flex", flexDirection: "column", gap: 24, height: "100%" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
-          <h2>Theme Presets</h2>
-          <p style={{ color: "var(--text-secondary)" }}>Save, share and manage your favourite setups</p>
+          <h2>{t('presets.title')}</h2>
+          <p style={{ color: "var(--text-secondary)" }}>{t('presets.subtitle')}</p>
         </div>
 
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn btn-secondary" onClick={handleImportPreset}>
             <Upload size={16} />
-            Import .matugen
+            {t('presets.import')}
           </button>
           <button className="btn btn-primary" onClick={() => setShowSaveModal(true)} disabled={!currentSchemeData}>
             <Download size={18} />
-            Save Current Setup
+            {t('presets.saveCurrent')}
           </button>
         </div>
       </div>
@@ -254,13 +256,13 @@ export default function Presets({
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16, overflowY: "auto" }}>
         {isLoading ? (
-          <p>Loading presets...</p>
+          <p>{t('presets.loading')}</p>
         ) : presets.length === 0 ? (
           <div className="empty-state" style={{ gridColumn: "1 / -1" }}>
             <Layers size={48} opacity={0.2} />
-            <p>No presets saved yet.</p>
+            <p>{t('presets.noPresets')}</p>
             <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>
-              Save your current setup or import a .matugen file!
+              {t('presets.saveOrImport')}
             </p>
           </div>
         ) : (
@@ -312,14 +314,14 @@ export default function Presets({
                 <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
                   <Monitor size={13} />
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {preset.wallpaper?.filename ?? "No wallpaper"}
+                    {preset.wallpaper?.filename ?? t('presets.noWallpaper')}
                   </span>
                 </div>
 
                 {preset.templates.length > 0 && (
                   <div style={{ fontSize: 12, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
                     <Package size={13} />
-                    <span>{preset.templates.length} template{preset.templates.length !== 1 ? "s" : ""}</span>
+                    <span>{preset.templates.length === 1 ? t('presets.templateCount_one', { count: 1 }) : t('presets.templateCount_other', { count: preset.templates.length })}</span>
                   </div>
                 )}
 
@@ -329,12 +331,12 @@ export default function Presets({
                     style={{ flex: 1 }}
                     onClick={() => onApplyPreset(preset)}
                   >
-                    <Check size={15} /> Apply
+                    <Check size={15} /> {t('presets.apply')}
                   </button>
                   <button
                     className="btn btn-secondary icon-btn"
                     onClick={() => handleExportPreset(preset)}
-                    title="Export / share this preset"
+                    title={t('presets.exportTitle')}
                     aria-label={`Export ${preset.name}`}
                   >
                     <Share2 size={15} />
@@ -342,7 +344,7 @@ export default function Presets({
                   <button
                     className="btn btn-danger icon-btn"
                     onClick={() => handleDeletePreset(preset.name)}
-                    title="Delete preset"
+                    title={t('presets.deleteTitle')}
                     aria-label={`Delete ${preset.name}`}
                   >
                     <Trash2 size={15} />

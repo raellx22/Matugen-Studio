@@ -30,6 +30,7 @@
   --accent-soft: rgba(168, 199, 250, 0.18);
   --danger: #ffb4ab;
   --danger-soft: rgba(255, 180, 171, 0.14);
+  --app-glow: rgba(168, 199, 250, 0.08);
   --shadow-card: 0 16px 40px rgba(0, 0, 0, 0.22);
   --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.18);
   --bg-color: var(--surface-base);
@@ -48,12 +49,21 @@
 body {
   font-family: var(--font-family);
   background:
-    radial-gradient(circle at 20% 0%, rgba(168, 199, 250, 0.08), transparent 34%),
+    radial-gradient(circle at 20% 0%, var(--app-glow), transparent 34%),
     var(--bg-color);
   color: var(--text-primary);
   height: 100vh;
   overflow: hidden;
   user-select: none;
+  transition: background-color 0.35s ease, color 0.25s ease;
+}
+
+:root[data-app-theme-mode="light"] {
+  color-scheme: light;
+}
+
+:root[data-app-theme-mode="dark"] {
+  color-scheme: dark;
 }
 
 .app-container {
@@ -65,7 +75,8 @@ body {
 /* Sidebar */
 .sidebar {
   width: 80px;
-  background: rgba(21, 24, 33, 0.92);
+  background: var(--surface-solid);
+  background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
   border-right: 1px solid var(--border);
   box-shadow: inset -1px 0 0 rgba(255,255,255,0.02);
   display: flex;
@@ -144,6 +155,7 @@ h3 {
   box-shadow: var(--shadow-soft);
   min-width: 0;
   overflow: hidden;
+  transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
 }
 
 .colors-workspace-grid {
@@ -897,6 +909,63 @@ textarea::placeholder {
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 4px #4ade80; opacity: 1; }
   50% { box-shadow: 0 0 12px #4ade80; opacity: 0.7; }
+}
+
+.toast-stack {
+  position: fixed;
+  right: 22px;
+  top: 22px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast {
+  width: min(420px, calc(100vw - 44px));
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-solid);
+  background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(12px);
+  font-size: var(--font-sm);
+  line-height: 1.35;
+  animation: toastIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toast-success {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border-subtle));
+}
+
+.toast-error {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--border-subtle));
+  color: var(--danger);
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 @media (max-width: 980px) {

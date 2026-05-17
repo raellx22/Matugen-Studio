@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { Search, LayoutTemplate, X } from "lucide-react";
 
@@ -24,6 +25,7 @@ interface TemplatesProps {
 }
 
 export default function Templates({ schemeData }: TemplatesProps) {
+  const { t } = useTranslation();
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -169,7 +171,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
   };
 
   const handleUninstall = async (template: TemplateInfo) => {
-    if (confirm(`Are you sure you want to remove ${template.displayName} from your active templates?`)) {
+    if (confirm(t('templates.removeConfirm', { name: template.displayName }))) {
       try {
         await invoke("uninstall_template", { templateName: template.name });
         fetchInstalled();
@@ -247,12 +249,12 @@ export default function Templates({ schemeData }: TemplatesProps) {
         <div className="modal-overlay" onClick={() => setInstallTemplate(null)}>
           <div className="modal-content" style={{ width: '90%', maxWidth: 500, display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>Install {installTemplate.displayName}</h3>
+              <h3>{t('templates.installTitle', { name: installTemplate.displayName })}</h3>
               <X size={20} cursor="pointer" onClick={() => setInstallTemplate(null)} />
             </div>
             <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
               <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-                This will copy <code>{installTemplate.relativePath}</code> to your matugen templates directory and add it to <code>config.toml</code>.
+                {t('templates.installDesc', { path: installTemplate.relativePath })}
               </p>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <span className="template-badge">{installTemplate.category}</span>
@@ -260,12 +262,12 @@ export default function Templates({ schemeData }: TemplatesProps) {
                   {automationLabel(installTemplate.automationLevel)}
                 </span>
                 {installTemplate.requiredCommands.map(cmd => (
-                  <span key={cmd} className="template-badge">needs {cmd}</span>
+                  <span key={cmd} className="template-badge">{t('templates.needs', { cmd })}</span>
                 ))}
               </div>
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Output Path</label>
+                <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.outputPath')}</label>
                 <input 
                   type="text" 
                   value={outputPath}
@@ -277,7 +279,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
 
               {installTemplate.relativePath.endsWith("midnight-discord.css") && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8, padding: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12 }}>
-                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Select Discord Client</label>
+                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.selectDiscordClient')}</label>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     {discordClients.map((client, idx) => (
                       <button
@@ -296,13 +298,13 @@ export default function Templates({ schemeData }: TemplatesProps) {
                     ))}
                   </div>
                   <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center' }}>
-                    Green = Detected. Red = Not found. You can install even if not found.
+                    {t('templates.discordHelp')}
                   </span>
                 </div>
               )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Post Hook (Optional)</label>
+                <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.postHook')}</label>
                 <input 
                   type="text" 
                   value={postHook}
@@ -314,7 +316,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
 
               {installTemplate.manualSteps.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.035)' }}>
-                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Manual steps still needed</label>
+                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.manualStepsNeeded')}</label>
                   {installTemplate.manualSteps.map((step, idx) => (
                     <span key={idx} style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>{idx + 1}. {step}</span>
                   ))}
@@ -322,9 +324,9 @@ export default function Templates({ schemeData }: TemplatesProps) {
               )}
             </div>
             <div className="modal-actions" style={{ marginTop: 24 }}>
-              <button className="btn btn-secondary" onClick={() => setInstallTemplate(null)}>Cancel</button>
+              <button className="btn btn-secondary" onClick={() => setInstallTemplate(null)}>{t('templates.cancel')}</button>
               <button className="btn btn-primary" disabled={isInstalling} onClick={submitInstall}>
-                {isInstalling ? "Installing..." : "Install"}
+                {isInstalling ? t('templates.installing') : t('templates.install')}
               </button>
             </div>
           </div>
@@ -333,15 +335,15 @@ export default function Templates({ schemeData }: TemplatesProps) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
-          <h2>Template Gallery</h2>
-          <p style={{ color: 'var(--text-secondary)' }}>Manage bundled matugen templates and automation hints</p>
+          <h2>{t('templates.title')}</h2>
+          <p style={{ color: 'var(--text-secondary)' }}>{t('templates.subtitle')}</p>
         </div>
         
         <div style={{ position: 'relative' }}>
           <Search size={18} style={{ position: 'absolute', left: 12, top: 10, color: 'var(--text-secondary)' }} />
           <input 
             type="text" 
-            placeholder="Search templates..." 
+            placeholder={t('templates.searchPlaceholder')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{ 
@@ -371,9 +373,9 @@ export default function Templates({ schemeData }: TemplatesProps) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16, overflowY: 'auto' }}>
         {isLoading ? (
-          <p>Loading templates...</p>
+          <p>{t('templates.loading')}</p>
         ) : filteredTemplates.length === 0 ? (
-          <p>No templates found.</p>
+          <p>{t('templates.noTemplates')}</p>
         ) : (
           filteredTemplates.map((template, idx) => (
             <div key={idx} className="template-card" style={{
@@ -403,18 +405,18 @@ export default function Templates({ schemeData }: TemplatesProps) {
                 <span className="template-badge" style={{ color: automationColor(template.automationLevel), borderColor: automationColor(template.automationLevel) }}>
                   {automationLabel(template.automationLevel)}
                 </span>
-                {!template.installable && <span className="template-badge">Asset</span>}
+                {!template.installable && <span className="template-badge">{t('templates.asset')}</span>}
               </div>
               <span style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {template.relativePath}
               </span>
               <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-                <button className="btn btn-secondary btn-compact" style={{ flex: 1 }} onClick={() => handlePreview(template)}>Preview</button>
+                <button className="btn btn-secondary btn-compact" style={{ flex: 1 }} onClick={() => handlePreview(template)}>{t('templates.preview')}</button>
                 {installedTemplates.has(installedKey(template.name)) ? (
-                  <button className="btn btn-danger btn-compact" style={{ flex: 1 }} onClick={() => handleUninstall(template)}>Remove</button>
+                  <button className="btn btn-danger btn-compact" style={{ flex: 1 }} onClick={() => handleUninstall(template)}>{t('templates.remove')}</button>
                 ) : (
                   <button className="btn btn-primary btn-compact" style={{ flex: 1 }} disabled={!template.installable} onClick={() => handleInstallClick(template)}>
-                    {template.installable ? "Install" : "Guide"}
+                    {template.installable ? t('templates.install') : t('templates.guide')}
                   </button>
                 )}
               </div>

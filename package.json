@@ -1,7 +1,7 @@
 {
   "name": "matugen-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "GPL-2.0-or-later",
   "type": "module",
   "scripts": {
@@ -18,9 +18,11 @@
     "@uiw/color-convert": "^2.10.1",
     "@uiw/react-color-shade-slider": "^2.10.1",
     "@uiw/react-color-wheel": "^2.10.1",
+    "i18next": "^26.2.0",
     "lucide-react": "^1.14.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-i18next": "^17.0.8"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

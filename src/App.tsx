@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Image, Palette, LayoutTemplate, Monitor, Settings, Download, Copy, Edit2, Check, X, RotateCcw } from "lucide-react";
@@ -10,6 +11,7 @@ import Templates from "./pages/Templates";
 import Source from "./pages/Source";
 import Presets from "./pages/Presets";
 import KdeIntegration from "./pages/KdeIntegration";
+import { applyAppTheme, buildAppTheme, persistAppTheme } from "./utils/appTheme";
 import {
   DEFAULT_WALLPAPERS_PER_PAGE,
   WALLPAPERS_PER_PAGE_OPTIONS,
@@ -79,14 +81,31 @@ interface KdeColorValue {
   hex: string;
 }
 
+type ToastTone = "success" | "error" | "info";
+
+interface ToastMessage {
+  id: number;
+  message: string;
+  tone: ToastTone;
+}
+
 function App() {
+  const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState("colors");
   const [wallpaperPath, setWallpaperPath] = useState<string | null>(null);
   const [schemeData, setSchemeData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [schemeType, setSchemeType] = useState("Content");
-  const [mode, setMode] = useState<"dark" | "light" | "system">("dark");
+  const [schemeType, setSchemeType] = useState("Tinted Smart");
+  const [mode, setMode] = useState<"dark" | "light" | "auto">("auto");
+
+  const effectiveMode = useMemo(() => {
+    if (mode === "dark") return "dark";
+    if (mode === "light") return "light";
+    // Auto mode follows wallpaper-average luminance when available.
+    const luma = schemeData?.wallpaper_luminance ?? schemeData?.source_color_luminance ?? 0;
+    return luma > 0.5 ? "light" : "dark";
+  }, [mode, schemeData]);
   const [selectedColor, setSelectedColor] = useState<SelectedColor | null>(null);
   const [showPicker, setShowPicker] = useState(false);
   const [pickerHsva, setPickerHsva] = useState({ h: 0, s: 0, v: 0, a: 1 });
@@ -104,12 +123,21 @@ function App() {
   const [kdeDiskColors, setKdeDiskColors] = useState<Record<string, string>>({});
   const [gtkThemeEnabled, setGtkThemeEnabled] = useState(() => localStorage.getItem(GTK_THEME_ENABLED_STORAGE_KEY) === "true");
   const [gtkThemeDark, setGtkThemeDark] = useState(() => localStorage.getItem(GTK_THEME_DARK_STORAGE_KEY) !== "false");
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [wallpapersPerPage, setWallpapersPerPage] = useState(() => {
     const saved = localStorage.getItem(WALLPAPERS_PER_PAGE_STORAGE_KEY);
     const value = validateWallpapersPerPage(saved ?? DEFAULT_WALLPAPERS_PER_PAGE);
     localStorage.setItem(WALLPAPERS_PER_PAGE_STORAGE_KEY, String(value));
     return value;
   });
+
+  const notify = (message: string, tone: ToastTone = "info") => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev.slice(-3), { id, message, tone }]);
+    window.setTimeout(() => {
+      setToasts(prev => prev.filter(toast => toast.id !== id));
+    }, tone === "error" ? 5200 : 3200);
+  };
 
   const handleWallpapersPerPageChange = (value: string) => {
     const parsed = validateWallpapersPerPage(value);
@@ -143,6 +171,13 @@ function App() {
       void loadKdeDiskColors();
     }
   }, [activeTab, schemeData]);
+
+  useEffect(() => {
+    if (!schemeData) return;
+    const theme = buildAppTheme(schemeData, mode);
+    applyAppTheme(theme);
+    persistAppTheme(theme);
+  }, [schemeData, mode]);
 
   const loadKdeDiskColors = async () => {
     try {
@@ -202,9 +237,34 @@ function App() {
     }
   };
 
-  const buildKdeSchemeContext = (baseContext: any = schemeData, overrides: Record<string, string> = kdeColorOverrides) => {
+  const buildThemeContext = (baseContext: any = schemeData, modeOverride: "dark" | "light" | "auto" = mode) => {
     if (!baseContext) return baseContext;
     const context = JSON.parse(JSON.stringify(baseContext));
+
+    // Compute the correct mode immediately for this context data to avoid React state delays
+    const luma = baseContext.wallpaper_luminance ?? baseContext.source_color_luminance ?? 0;
+    const targetMode = modeOverride === "auto" ? (luma > 0.5 ? "light" : "dark") : modeOverride;
+
+    // Ensure the 'default' variant for each color group correctly reflects our computed light/dark mode
+    if (context.colors) {
+      for (const key in context.colors) {
+        if (context.colors[key][targetMode]) {
+          context.colors[key].default = { ...context.colors[key][targetMode] };
+        }
+      }
+    }
+
+    return context;
+  };
+
+  const buildKdeSchemeContext = (
+    baseContext: any = schemeData,
+    overrides: Record<string, string> = kdeColorOverrides,
+    modeOverride: "dark" | "light" | "auto" = mode,
+  ) => {
+    if (!baseContext) return baseContext;
+    const context = buildThemeContext(baseContext, modeOverride);
+
     KDE_COLOR_CONTROLS.forEach(control => {
       const overrideHex = normalizeHex(overrides[control.key]);
       if (overrideHex) {
@@ -231,6 +291,52 @@ function App() {
   const persistGtkThemeDark = (dark: boolean) => {
     setGtkThemeDark(dark);
     localStorage.setItem(GTK_THEME_DARK_STORAGE_KEY, String(dark));
+  };
+
+  const getEffectiveGtkDark = (data: any, modeOverride: "dark" | "light" | "auto" = mode) => {
+    const luma = data?.wallpaper_luminance ?? data?.source_color_luminance ?? 0;
+    return modeOverride === "auto" ? luma <= 0.5 : modeOverride === "dark";
+  };
+
+  const applyGeneratedThemeContext = async (data: any, modeOverride: "dark" | "light" | "auto" = mode) => {
+    const targetDark = getEffectiveGtkDark(data, modeOverride);
+    const themeContext = buildThemeContext(data, modeOverride);
+    const kdeContext = buildKdeSchemeContext(data, kdeColorOverrides, modeOverride);
+    const tasks: Promise<any>[] = [
+      invoke("apply_theme", { context: themeContext }),
+      invoke("apply_kde_colorscheme", { context: kdeContext }),
+    ];
+
+    if (gtkThemeEnabled) {
+      persistGtkThemeDark(targetDark);
+      tasks.push(invoke("apply_gtk_theme", { context: themeContext, dark: targetDark }));
+    }
+
+    const results = await Promise.allSettled(tasks);
+    const failed = results.find(result => result.status === "rejected");
+    if (failed && failed.status === "rejected") {
+      throw failed.reason;
+    }
+
+    await loadTemplateColorControls(themeContext);
+    await loadKdeDiskColors();
+    return targetDark;
+  };
+
+  const handleModeChange = async (nextMode: "dark" | "light" | "auto") => {
+    setMode(nextMode);
+    if (!schemeData) return;
+
+    try {
+      setIsLoading(true);
+      await applyGeneratedThemeContext(schemeData, nextMode);
+      notify(t('messages.modeReapplied'), "success");
+    } catch (err: any) {
+      setErrorMsg(err.toString());
+      notify(t('messages.failedToApplyTheme') + err, "error");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const selectImage = async () => {
@@ -285,8 +391,11 @@ function App() {
         const data = fixMatugenColors(rawData);
         setSchemeData(data);
         setErrorMsg(null);
+        await applyGeneratedThemeContext(data);
+        notify(t('messages.schemeRegenerated', { scheme: newType }), "success");
       } catch (err: any) {
         setErrorMsg(err.toString());
+        notify(t('messages.failedToGenerate') + err, "error");
       } finally {
         setIsLoading(false);
       }
@@ -304,24 +413,11 @@ function App() {
       const data = fixMatugenColors(rawData);
       setSchemeData(data);
       setErrorMsg(null);
-      const tasks: Promise<any>[] = [
-        invoke("apply_theme", { context: data }),
-        invoke("apply_kde_colorscheme", { context: buildKdeSchemeContext(data) }),
-      ];
-      if (gtkThemeEnabled) {
-        tasks.push(invoke("apply_gtk_theme", { context: data, dark: gtkThemeDark }));
-      }
-      const results = await Promise.allSettled(tasks);
-      const failed = results.find(result => result.status === "rejected");
-      if (failed && failed.status === "rejected") {
-        throw failed.reason;
-      }
-      await loadTemplateColorControls(data);
-      await loadKdeDiskColors();
-      alert("Theme generated and applied globally!");
+      await applyGeneratedThemeContext(data);
+      notify(t('messages.themeGenerated'), "success");
     } catch (err: any) {
       setErrorMsg(err.toString());
-      alert("Failed to generate or apply theme: " + err);
+      notify(t('messages.failedToGenerate') + err, "error");
     } finally {
       setIsLoading(false);
     }
@@ -339,7 +435,7 @@ function App() {
       setErrorMsg(null);
     } catch (err: any) {
       setErrorMsg(err.toString());
-      alert("Failed to generate colors: " + err);
+      notify(t('messages.failedToGenerateColors') + err, "error");
     } finally {
       setIsLoading(false);
     }
@@ -400,7 +496,7 @@ function App() {
       originalHex: color.originalHex,
     });
     if (schemeData) {
-      await invoke("apply_theme", { context: schemeData });
+      await invoke("apply_theme", { context: buildThemeContext(schemeData) });
     } else {
       await invoke("apply_template_overrides_to_outputs");
     }
@@ -413,7 +509,7 @@ function App() {
       tokenKey: tokenKey ?? null,
     });
     if (schemeData) {
-      await invoke("apply_theme", { context: schemeData });
+      await invoke("apply_theme", { context: buildThemeContext(schemeData) });
     } else {
       await invoke("apply_template_overrides_to_outputs");
     }
@@ -461,30 +557,32 @@ function App() {
     setWallpaperPath(wallpaper);
     setSchemeType(scheme_type);
     setSchemeData(scheme_data);
-    setMode((preset.scheme.mode ?? "dark") as "dark" | "light" | "system");
+    setMode((preset.scheme.mode ?? "dark") as "dark" | "light" | "auto");
 
     const desktop = preset.desktop ?? { apply_wallpaper: true, apply_kde_colorscheme: true, apply_templates: true };
+    const presetMode = (preset.scheme.mode ?? "dark") as "dark" | "light" | "auto";
+    const themedPresetContext = buildThemeContext(scheme_data, presetMode);
 
     try {
       if (wallpaper && desktop.apply_wallpaper) {
         await invoke("apply_wallpaper", { imagePath: wallpaper, screenIndex: -1 });
       }
       if (desktop.apply_templates) {
-        await invoke("apply_theme", { context: scheme_data });
+        await invoke("apply_theme", { context: themedPresetContext });
       }
       if (desktop.apply_kde_colorscheme) {
-        invoke("apply_kde_colorscheme", { context: buildKdeSchemeContext(scheme_data) }).catch(e =>
+        invoke("apply_kde_colorscheme", { context: buildKdeSchemeContext(scheme_data, kdeColorOverrides, presetMode) }).catch(e =>
           console.error("KDE scheme apply failed:", e)
         );
       }
       if (gtkThemeEnabled) {
-        invoke("apply_gtk_theme", { context: scheme_data, dark: gtkThemeDark }).catch(e =>
+        invoke("apply_gtk_theme", { context: themedPresetContext, dark: getEffectiveGtkDark(scheme_data, presetMode) }).catch(e =>
           console.error("GTK theme apply failed:", e)
         );
       }
-      alert("Preset applied!");
+      notify(t('messages.presetApplied'), "success");
     } catch (e) {
-      alert("Failed to apply preset: " + e);
+      notify(t('messages.failedToApplyPreset') + e, "error");
     }
   };
 
@@ -505,7 +603,7 @@ function App() {
   const renderColorSwatch = (name: string, path: string, isLarge = false) => {
     let hex = "#333333";
     if (schemeData && schemeData.colors && schemeData.colors[path]) {
-      hex = schemeData.colors[path].dark.hex || schemeData.colors[path].dark.color || "#333333";
+      hex = schemeData.colors[path][effectiveMode]?.hex || schemeData.colors[path][effectiveMode]?.color || "#333333";
     }
     // Calculate contrast text color
     const textColor = isLightColor(hex) ? '#000000' : '#ffffff';
@@ -570,12 +668,16 @@ function App() {
             title="Reset override"
             onClick={(event) => {
               event.stopPropagation();
-              void resetTemplateOverride(group.templateName, control.key).catch(e => alert("Failed to reset override: " + e));
+              void resetTemplateOverride(group.templateName, control.key)
+                .then(() => notify("Override reset.", "success"))
+                .catch(e => notify("Failed to reset override: " + e, "error"));
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.stopPropagation();
-                void resetTemplateOverride(group.templateName, control.key).catch(e => alert("Failed to reset override: " + e));
+                void resetTemplateOverride(group.templateName, control.key)
+                  .then(() => notify("Override reset.", "success"))
+                  .catch(e => notify("Failed to reset override: " + e, "error"));
               }
             }}
           >
@@ -591,24 +693,24 @@ function App() {
       <div className="card template-colors-panel">
         <div className="template-colors-header">
           <div>
-            <h3>Template Color Overrides</h3>
-            <p>Adjust the colors each installed template exposes, without changing the Material You palette.</p>
+            <h3>{t('colors.templateOverridesTitle')}</h3>
+            <p>{t('colors.templateOverridesDesc')}</p>
           </div>
           <div className="template-colors-summary">
-            <span>{templateColorGroups.length} templates</span>
-            <span>{templateOverrideCount} overrides</span>
+            <span>{t('colors.templatesCount', { count: templateColorGroups.length })}</span>
+            <span>{t('colors.overridesCount', { count: templateOverrideCount })}</span>
           </div>
         </div>
 
         {isLoadingTemplateColors ? (
           <div className="template-colors-empty">
             <Palette size={28} opacity={0.35} />
-            <span>Scanning installed templates...</span>
+            <span>{t('colors.scanningTemplates')}</span>
           </div>
         ) : templateColorGroups.length === 0 ? (
           <div className="template-colors-empty">
             <LayoutTemplate size={28} opacity={0.35} />
-            <span>Install templates to edit their exposed color tokens here.</span>
+            <span>{t('colors.installTemplatesToEdit')}</span>
           </div>
         ) : (
           <>
@@ -625,10 +727,12 @@ function App() {
                   type="button"
                   className="btn btn-secondary btn-compact"
                   disabled={!selectedTemplateGroup.controls.some(control => control.overridden)}
-                  onClick={() => resetTemplateOverride(selectedTemplateGroup.templateName).catch(e => alert("Failed to reset overrides: " + e))}
+                  onClick={() => resetTemplateOverride(selectedTemplateGroup.templateName)
+                    .then(() => notify("Template overrides reset.", "success"))
+                    .catch(e => notify("Failed to reset overrides: " + e, "error"))}
                 >
                   <RotateCcw size={14} />
-                  Reset template
+                  {t('colors.resetTemplate')}
                 </button>
               )}
             </div>
@@ -676,7 +780,9 @@ function App() {
             type="button"
             className="btn btn-secondary btn-compact"
             disabled={overrideCount === 0}
-            onClick={() => resetKdeColorOverride().catch(e => alert("Failed to reset KDE colors: " + e))}
+            onClick={() => resetKdeColorOverride()
+              .then(() => notify("KDE color overrides reset.", "success"))
+              .catch(e => notify("Failed to reset KDE colors: " + e, "error"))}
           >
             <RotateCcw size={14} />
             Reset KDE
@@ -733,12 +839,16 @@ function App() {
                       title="Reset KDE color"
                       onClick={(event) => {
                         event.stopPropagation();
-                        void resetKdeColorOverride(control.key).catch(e => alert("Failed to reset KDE color: " + e));
+                        void resetKdeColorOverride(control.key)
+                          .then(() => notify("KDE color reset.", "success"))
+                          .catch(e => notify("Failed to reset KDE color: " + e, "error"));
                       }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") {
                           event.stopPropagation();
-                          void resetKdeColorOverride(control.key).catch(e => alert("Failed to reset KDE color: " + e));
+                          void resetKdeColorOverride(control.key)
+                            .then(() => notify("KDE color reset.", "success"))
+                            .catch(e => notify("Failed to reset KDE color: " + e, "error"));
                         }
                       }}
                     >
@@ -770,6 +880,14 @@ function App() {
   
   return (
     <div className="app-container">
+      <div className="toast-stack" aria-live="polite" aria-atomic="true">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`toast toast-${toast.tone}`}>
+            {toast.message}
+          </div>
+        ))}
+      </div>
+
       {selectedColor && (
         <div className="modal-overlay" onClick={() => { setSelectedColor(null); setShowPicker(false); }}>
           <div className="modal-content" onClick={e => e.stopPropagation()}>
@@ -868,20 +986,21 @@ function App() {
                         await applyKdeColorOverride(selectedColor, currentHex);
                       } else {
                         if (!schemeData) {
-                          alert("Generate a color palette first!");
+                          notify(t('messages.generateFirst'), "error");
                           return;
                         }
-                        await invoke("apply_theme", { context: schemeData });
+                        await invoke("apply_theme", { context: buildThemeContext(schemeData) });
                       }
+                      notify(selectedColor.scope === "template" || selectedColor.scope === "kde" ? t('colors.saveOverride') : t('colors.applyChanges'), "success");
                       setSelectedColor(null);
                       setShowPicker(false);
                     } catch (e) {
                       console.error(e);
-                      alert("Failed to apply color change: " + e);
+                      notify("Failed to apply color change: " + e, "error");
                     }
                   }}
                 >
-                  <Check size={16} /> {selectedColor.scope === "template" || selectedColor.scope === "kde" ? "Save Override" : "Apply Changes to System"}
+                  <Check size={16} /> {selectedColor.scope === "template" || selectedColor.scope === "kde" ? t('colors.saveOverride') : t('colors.applyChanges')}
                 </button>
               </div>
             )}
@@ -895,54 +1014,54 @@ function App() {
         </div>
         <div className={`sidebar-item ${activeTab === 'source' ? 'active' : ''}`} onClick={() => setActiveTab('source')}>
           <Image size={24} />
-          <span>Source</span>
+          <span>{t('sidebar.source')}</span>
         </div>
         <div className={`sidebar-item ${activeTab === 'presets' ? 'active' : ''}`} onClick={() => setActiveTab('presets')}>
           <Download size={24} />
-          <span>Presets</span>
+          <span>{t('sidebar.presets')}</span>
         </div>
         <div className={`sidebar-item ${activeTab === 'colors' ? 'active' : ''}`} onClick={() => setActiveTab('colors')}>
           <Palette size={24} />
-          <span>Colors</span>
+          <span>{t('sidebar.colors')}</span>
         </div>
         <div className={`sidebar-item ${activeTab === 'templates' ? 'active' : ''}`} onClick={() => setActiveTab('templates')}>
           <LayoutTemplate size={24} />
-          <span>Templates</span>
+          <span>{t('sidebar.templates')}</span>
         </div>
         <div className={`sidebar-item ${activeTab === 'desktop' ? 'active' : ''}`} onClick={() => setActiveTab('desktop')}>
           <Monitor size={24} />
-          <span>Desktop</span>
+          <span>{t('sidebar.desktop')}</span>
         </div>
         <div style={{ flex: 1 }}></div>
         <div className="sidebar-item" style={{ cursor: 'pointer', background: 'var(--accent-transparent)', color: 'var(--accent)' }} onClick={async () => {
           if (!schemeData) {
-            alert("Generate a color palette first!");
+            notify(t('messages.generateFirst'), "error");
             return;
           }
           try {
             const tasks: Promise<any>[] = [
-              invoke("apply_theme", { context: schemeData }),
+              invoke("apply_theme", { context: buildThemeContext(schemeData) }),
               invoke("apply_kde_colorscheme", { context: buildKdeSchemeContext(schemeData) }),
             ];
             if (gtkThemeEnabled) {
-              tasks.push(invoke("apply_gtk_theme", { context: schemeData, dark: gtkThemeDark }));
+              tasks.push(invoke("apply_gtk_theme", { context: buildThemeContext(schemeData), dark: getEffectiveGtkDark(schemeData) }));
             }
             const results = await Promise.allSettled(tasks);
             const failed = results.find(result => result.status === "rejected");
             if (failed && failed.status === "rejected") {
               throw failed.reason;
             }
-            alert("Theme applied globally to all installed templates!");
+            notify(t('messages.themeAppliedGlobally'), "success");
           } catch (e) {
-            alert("Failed to apply theme: " + e);
+            notify(t('messages.failedToApplyTheme') + e, "error");
           }
         }}>
           <Download size={24} />
-          <span style={{ fontWeight: 'bold' }}>Apply</span>
+          <span style={{ fontWeight: 'bold' }}>{t('sidebar.apply')}</span>
         </div>
         <div className={`sidebar-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
           <Settings size={24} />
-          <span>Settings</span>
+          <span>{t('sidebar.settings')}</span>
         </div>
       </aside>
 
@@ -968,23 +1087,37 @@ function App() {
         {activeTab === 'colors' && (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2>Matugen Studio</h2>
+              <h2>{t('colors.title')}</h2>
               <div className="controls-row">
-                <select value={mode} onChange={(e) => setMode(e.target.value as "dark" | "light" | "system")}>
+                <select value={mode} onChange={(e) => handleModeChange(e.target.value as "dark" | "light" | "auto")}>
                   <option value="dark">Dark</option>
                   <option value="light">Light</option>
-                  <option value="system">System</option>
+                  <option value="auto">Auto (Wallpaper)</option>
                 </select>
                 <select value={schemeType} onChange={(e) => handleSchemeTypeChange(e.target.value)}>
-                  <option>Content</option>
-                  <option>Expressive</option>
-                  <option>Fidelity</option>
-                  <option>Fruit Salad</option>
-                  <option>Monochrome</option>
-                  <option>Neutral</option>
-                  <option>Rainbow</option>
-                  <option>Tonal Spot</option>
-                  <option>Vibrant</option>
+                  <optgroup label="Tinted">
+                    <option value="Tinted Smart">Smart</option>
+                    <option value="Tinted Content">Content</option>
+                    <option value="Tinted Expressive">Expressive</option>
+                    <option value="Tinted Fidelity">Fidelity</option>
+                    <option value="Tinted Fruit Salad">Fruit Salad</option>
+                    <option value="Tinted Neutral">Neutral</option>
+                    <option value="Tinted Rainbow">Rainbow</option>
+                    <option value="Tinted Tonal Spot">Tonal Spot</option>
+                    <option value="Tinted Vibrant">Vibrant</option>
+                  </optgroup>
+                  <optgroup label="Classic">
+                    <option value="Smart">Smart</option>
+                    <option value="Content">Content</option>
+                    <option value="Expressive">Expressive</option>
+                    <option value="Fidelity">Fidelity</option>
+                    <option value="Fruit Salad">Fruit Salad</option>
+                    <option value="Monochrome">Monochrome</option>
+                    <option value="Neutral">Neutral</option>
+                    <option value="Rainbow">Rainbow</option>
+                    <option value="Tonal Spot">Tonal Spot</option>
+                    <option value="Vibrant">Vibrant</option>
+                  </optgroup>
                 </select>
               </div>
             </div>
@@ -992,7 +1125,7 @@ function App() {
             <div className="colors-workspace-grid">
             {/* Left Column */}
             <div className="card colors-wallpaper-card">
-              <h3>Wallpaper Preview</h3>
+              <h3>{t('colors.wallpaperPreview')}</h3>
               {wallpaperPath ? (
                 <div 
                   className="wallpaper-preview" 
@@ -1007,7 +1140,7 @@ function App() {
               ) : (
                 <div className="wallpaper-preview wallpaper-placeholder" onClick={selectImage}>
                   <Image size={48} />
-                  <span>{isLoading ? "Generating palette..." : "Click to select an image"}</span>
+                  <span>{isLoading ? t('colors.generatingPalette') : t('colors.clickToSelect')}</span>
                 </div>
               )}
               
@@ -1017,7 +1150,7 @@ function App() {
                 </div>
               )}
               
-              <div className="palette-title">Source Color</div>
+              <div className="palette-title">{t('colors.sourceColor')}</div>
               <div className="color-row">
                 <div 
                   className="color-swatch large" 
@@ -1026,7 +1159,7 @@ function App() {
                     color: isLightColor(schemeData?.source_color_hex || '#333333') ? '#000' : '#fff'
                   }}
                 >
-                  <span style={{opacity: 0.7}}>Extracted</span>
+                  <span style={{opacity: 0.7}}>{t('colors.extracted')}</span>
                   <span style={{fontWeight: 'bold'}}>{(schemeData?.source_color_hex || '#xxxxxx').toUpperCase()}</span>
                 </div>
               </div>
@@ -1034,7 +1167,7 @@ function App() {
 
             {/* Right Column - Colors */}
             <div className="card colors-palette-card">
-              <h3>Material You Palette</h3>
+              <h3>{t('colors.materialYouPalette')}</h3>
               
               {schemeData ? (
                 <div className="colors-palette-scroll">
@@ -1091,7 +1224,7 @@ function App() {
               ) : (
                 <div className="empty-state">
                   <Palette size={48} opacity={0.2} />
-                  <p>Select an image to generate colors</p>
+                  <p>{t('colors.selectImageToGenerate')}</p>
                 </div>
               )}
             </div>
@@ -1114,6 +1247,7 @@ function App() {
             gtkThemeDark={gtkThemeDark}
             onGtkThemeEnabledChange={persistGtkThemeEnabled}
             onGtkThemeDarkChange={persistGtkThemeDark}
+            onNotify={notify}
             onGenerateFromWallpaper={async (path: string) => {
               setWallpaperPath(path);
               try {
@@ -1122,7 +1256,9 @@ function App() {
                 const data = fixMatugenColors(rawData);
                 setSchemeData(data);
                 setErrorMsg(null);
-                return data;
+                const luma = data.wallpaper_luminance ?? data.source_color_luminance ?? 0;
+                const targetDark = mode === "auto" ? luma <= 0.5 : mode === "dark";
+                return { raw: buildThemeContext(data), kde: buildKdeSchemeContext(data), effectiveDark: targetDark };
               } catch (err: any) {
                 setErrorMsg(err.toString());
                 throw err;
@@ -1136,18 +1272,37 @@ function App() {
         {activeTab === 'settings' && (
           <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24, height: '100%', width: '100%' }}>
             <div>
-              <h2>Settings</h2>
+              <h2>{t('settings.title')}</h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                Ajustes locais de desempenho e comportamento do app.
+                {t('settings.description')}
               </p>
             </div>
 
             <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div style={{ maxWidth: 620 }}>
-                  <h3 style={{ marginTop: 0 }}>Wallpapers por página</h3>
+                  <h3 style={{ marginTop: 0 }}>{t('settings.language')}</h3>
                   <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
-                    Controla quantos wallpapers são carregados por vez nas sources. Valores menores reduzem uso de memória e melhoram desempenho em pastas grandes.
+                    {t('settings.languageDescription')}
+                  </p>
+                </div>
+                <select
+                  value={i18n.language}
+                  onChange={(e) => i18n.changeLanguage(e.target.value)}
+                  style={{ minWidth: 120, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+                >
+                  <option value="pt-BR">Português (Brasil)</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+
+              <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '8px 0' }} />
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div style={{ maxWidth: 620 }}>
+                  <h3 style={{ marginTop: 0 }}>{t('settings.wallpapersPerPage')}</h3>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
+                    {t('settings.wallpapersPerPageDescription')}
                   </p>
                 </div>
                 <select
