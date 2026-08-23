@@ -1,14 +1,25 @@
-use execute::{shell, Execute};
+use crate::commands::proc;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, LazyLock, Mutex as StdMutex,
+};
 use std::time::Duration;
 use tauri::{async_runtime::Mutex, Emitter, Manager};
-use tokio::time::sleep;
 use zbus::zvariant::OwnedValue;
+use tokio::time::sleep;
+
+static KDE_APPLY_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+/// `plasma-apply-colorscheme` normally returns in well under a second; if
+/// KWin/plasmashell is ever stuck, this bounds how long "apply colors" can
+/// stall waiting on it instead of hanging indefinitely.
+const PLASMA_APPLY_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct KdeServiceStatus {
@@ -78,6 +89,7 @@ pub struct KdeColorValue {
 
 struct KdeWatcherRuntime {
     handle: tauri::async_runtime::JoinHandle<()>,
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -181,7 +193,6 @@ fn get_color_or(context: &serde_json::Value, name: &str, fallback: &str, variant
 }
 
 /// Generate a full KDE Plasma color scheme file from matugen colors
-#[allow(unused_variables)]
 fn generate_kde_colorscheme(context: &serde_json::Value, scheme_name: &str) -> String {
     let v = "default";
 
@@ -193,7 +204,6 @@ fn generate_kde_colorscheme(context: &serde_json::Value, scheme_name: &str) -> S
     let secondary = get_color(context, "secondary", v);
     let on_secondary = get_color(context, "on_secondary", v);
     let secondary_container = get_color(context, "secondary_container", v);
-    let on_secondary_container = get_color(context, "on_secondary_container", v);
 
     let tertiary = get_color(context, "tertiary", v);
     let on_tertiary = get_color(context, "on_tertiary", v);
@@ -201,24 +211,17 @@ fn generate_kde_colorscheme(context: &serde_json::Value, scheme_name: &str) -> S
 
     let surface = get_color(context, "surface", v);
     let on_surface = get_color(context, "on_surface", v);
-    let surface_variant = get_color(context, "surface_variant", v);
     let on_surface_variant = get_color(context, "on_surface_variant", v);
 
     let error = get_color(context, "error", v);
     let on_error = get_color(context, "on_error", v);
-    let error_container = get_color(context, "error_container", v);
 
-    let outline = get_color(context, "outline", v);
     let outline_variant = get_color(context, "outline_variant", v);
 
     let inverse_surface = get_color_or(context, "inverse_surface", "surface_variant", v);
     let inverse_on_surface = get_color_or(context, "inverse_on_surface", "on_surface", v);
 
     let surface_container = get_color_or(context, "surface_container", "surface", v);
-    let surface_container_high =
-        get_color_or(context, "surface_container_high", "surface_variant", v);
-    let surface_container_highest =
-        get_color_or(context, "surface_container_highest", "surface_variant", v);
     let surface_container_low = get_color_or(context, "surface_container_low", "surface", v);
     let surface_dim = get_color_or(context, "surface_dim", "surface", v);
     let surface_bright = get_color_or(context, "surface_bright", "surface_variant", v);
@@ -251,11 +254,11 @@ IntensityAmount=0
 IntensityEffect=0
 
 [Colors:Button]
-BackgroundAlternate={surface_container_high_rgb}
+BackgroundAlternate={secondary_container_rgb}
 BackgroundNormal={surface_container_rgb}
 DecorationFocus={primary_rgb}
 DecorationHover={primary_rgb}
-ForegroundActive={primary_rgb}
+ForegroundActive={on_secondary_rgb}
 ForegroundInactive={on_surface_variant_rgb}
 ForegroundLink={primary_rgb}
 ForegroundNegative={error_rgb}
@@ -265,31 +268,31 @@ ForegroundPositive={primary_rgb}
 ForegroundVisited={secondary_rgb}
 
 [Colors:Complementary]
-BackgroundAlternate={surface_container_high_rgb}
-BackgroundNormal={surface_rgb}
-DecorationFocus={primary_rgb}
-DecorationHover={primary_rgb}
-ForegroundActive={primary_rgb}
-ForegroundInactive={on_surface_variant_rgb}
+BackgroundAlternate={tertiary_container_rgb}
+BackgroundNormal={tertiary_container_rgb}
+DecorationFocus={tertiary_rgb}
+DecorationHover={tertiary_rgb}
+ForegroundActive={on_tertiary_rgb}
+ForegroundInactive={on_tertiary_rgb}
 ForegroundLink={primary_rgb}
 ForegroundNegative={error_rgb}
 ForegroundNeutral={tertiary_rgb}
-ForegroundNormal={on_surface_rgb}
-ForegroundPositive={primary_rgb}
+ForegroundNormal={on_tertiary_rgb}
+ForegroundPositive={secondary_rgb}
 ForegroundVisited={secondary_rgb}
 
 [Colors:Header]
-BackgroundAlternate={surface_container_rgb}
-BackgroundNormal={surface_rgb}
+BackgroundAlternate={primary_container_rgb}
+BackgroundNormal={primary_container_rgb}
 DecorationFocus={primary_rgb}
 DecorationHover={primary_rgb}
-ForegroundActive={primary_rgb}
-ForegroundInactive={on_surface_variant_rgb}
+ForegroundActive={on_primary_container_rgb}
+ForegroundInactive={on_primary_container_rgb}
 ForegroundLink={primary_rgb}
 ForegroundNegative={error_rgb}
 ForegroundNeutral={tertiary_rgb}
-ForegroundNormal={on_surface_rgb}
-ForegroundPositive={primary_rgb}
+ForegroundNormal={on_primary_container_rgb}
+ForegroundPositive={secondary_rgb}
 ForegroundVisited={secondary_rgb}
 
 [Colors:Header][Inactive]
@@ -321,17 +324,17 @@ ForegroundPositive={positive_rgb}
 ForegroundVisited={visited_rgb}
 
 [Colors:Tooltip]
-BackgroundAlternate={surface_container_highest_rgb}
-BackgroundNormal={surface_container_high_rgb}
+BackgroundAlternate={inverse_surface_rgb}
+BackgroundNormal={inverse_surface_rgb}
 DecorationFocus={primary_rgb}
 DecorationHover={primary_rgb}
-ForegroundActive={primary_rgb}
-ForegroundInactive={on_surface_variant_rgb}
+ForegroundActive={inverse_on_surface_rgb}
+ForegroundInactive={inverse_on_surface_rgb}
 ForegroundLink={primary_rgb}
-ForegroundNegative={error_rgb}
+ForegroundNegative={on_error_rgb}
 ForegroundNeutral={tertiary_rgb}
-ForegroundNormal={on_surface_rgb}
-ForegroundPositive={primary_rgb}
+ForegroundNormal={inverse_on_surface_rgb}
+ForegroundPositive={secondary_rgb}
 ForegroundVisited={secondary_rgb}
 
 [Colors:View]
@@ -371,32 +374,41 @@ shadeSortColumn=true
 contrast=4
 
 [WM]
-activeBackground={surface_container_rgb}
+activeBackground={surface_bright_rgb}
 activeBlend={primary_rgb}
 activeForeground={on_surface_rgb}
 inactiveBackground={surface_container_low_rgb}
 inactiveBlend={surface_dim_rgb}
 inactiveForeground={on_surface_variant_rgb}
-frame={surface_container_low_rgb}
+frame={outline_variant_rgb}
 "#,
         // Surface / base colors
         surface_rgb = rgb_str(&surface),
         surface_container_rgb = rgb_str(&surface_container),
-        surface_container_high_rgb = rgb_str(&surface_container_high),
-        surface_container_highest_rgb = rgb_str(&surface_container_highest),
         surface_container_low_rgb = rgb_str(&surface_container_low),
         surface_dim_rgb = rgb_str(&surface_dim),
         on_surface_rgb = rgb_str(&on_surface),
         on_surface_variant_rgb = rgb_str(&on_surface_variant),
+        surface_bright_rgb = rgb_str(&surface_bright),
+        inverse_surface_rgb = rgb_str(&inverse_surface),
+        inverse_on_surface_rgb = rgb_str(&inverse_on_surface),
+        outline_variant_rgb = rgb_str(&outline_variant),
         // Primary
         primary_rgb = rgb_str(&primary),
         on_primary_rgb = rgb_str(&on_primary),
+        primary_container_rgb = rgb_str(&primary_container),
+        on_primary_container_rgb = rgb_str(&on_primary_container),
         // Secondary
         secondary_rgb = rgb_str(&secondary),
+        on_secondary_rgb = rgb_str(&on_secondary),
+        secondary_container_rgb = rgb_str(&secondary_container),
         // Tertiary
         tertiary_rgb = rgb_str(&tertiary),
+        on_tertiary_rgb = rgb_str(&on_tertiary),
+        tertiary_container_rgb = rgb_str(&tertiary_container),
         // Error
         error_rgb = rgb_str(&error),
+        on_error_rgb = rgb_str(&on_error),
         // Scheme name
         scheme_name = scheme_name,
         // Fallbacks
@@ -436,6 +448,7 @@ pub async fn apply_kde_colorscheme(context: serde_json::Value) -> Result<(), Str
 }
 
 pub fn apply_kde_colorscheme_blocking(context: serde_json::Value) -> Result<(), String> {
+    let _guard = KDE_APPLY_LOCK.lock().map_err(|e| e.to_string())?;
     let color_schemes_dir = dirs::home_dir()
         .ok_or("Could not find home directory")?
         .join(".local/share/color-schemes");
@@ -455,10 +468,10 @@ pub fn apply_kde_colorscheme_blocking(context: serde_json::Value) -> Result<(), 
     fs::write(&file_path, &content).map_err(|e| e.to_string())?;
     fs::write(&swap_path, &swap_content).map_err(|e| e.to_string())?;
 
-    let mut cmd1 = shell(&format!("plasma-apply-colorscheme {}", swap_name));
-    let output1 = cmd1
-        .execute_output()
-        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
+    let output1 = proc::run_with_timeout(
+        &format!("plasma-apply-colorscheme {}", swap_name),
+        PLASMA_APPLY_TIMEOUT,
+    )?;
     if !output1.status.success() {
         fs::remove_file(&swap_path).ok();
         return Err(String::from_utf8_lossy(&output1.stderr).to_string());
@@ -466,15 +479,16 @@ pub fn apply_kde_colorscheme_blocking(context: serde_json::Value) -> Result<(), 
 
     std::thread::sleep(Duration::from_millis(200));
 
-    let mut cmd2 = shell(&format!("plasma-apply-colorscheme {}", scheme_name));
-    let output2 = cmd2
-        .execute_output()
-        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
-    fs::remove_file(&swap_path).ok();
+    let output2 = proc::run_with_timeout(
+        &format!("plasma-apply-colorscheme {}", scheme_name),
+        PLASMA_APPLY_TIMEOUT,
+    )?;
 
     if !output2.status.success() {
         return Err(String::from_utf8_lossy(&output2.stderr).to_string());
     }
+
+    fs::remove_file(&swap_path).ok();
 
     Ok(())
 }
@@ -655,6 +669,7 @@ fn hex_to_rgb_string(hex: &str) -> Result<String, String> {
 }
 
 fn apply_existing_kde_colorscheme() -> Result<(), String> {
+    let _guard = KDE_APPLY_LOCK.lock().map_err(|e| e.to_string())?;
     let scheme_path = kde_colorscheme_path("MatugenStudio")?;
     let swap_path = kde_colorscheme_path("MatugenStudioSwap")?;
     let content = fs::read_to_string(&scheme_path).map_err(|e| e.to_string())?;
@@ -663,10 +678,10 @@ fn apply_existing_kde_colorscheme() -> Result<(), String> {
         .replace("Name=MatugenStudio", "Name=MatugenStudioSwap");
     fs::write(&swap_path, swap_content).map_err(|e| e.to_string())?;
 
-    let mut cmd1 = shell("plasma-apply-colorscheme MatugenStudioSwap");
-    let output1 = cmd1
-        .execute_output()
-        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
+    let output1 = proc::run_with_timeout(
+        "plasma-apply-colorscheme MatugenStudioSwap",
+        PLASMA_APPLY_TIMEOUT,
+    )?;
     if !output1.status.success() {
         fs::remove_file(&swap_path).ok();
         return Err(String::from_utf8_lossy(&output1.stderr).to_string());
@@ -674,15 +689,16 @@ fn apply_existing_kde_colorscheme() -> Result<(), String> {
 
     std::thread::sleep(Duration::from_millis(120));
 
-    let mut cmd2 = shell("plasma-apply-colorscheme MatugenStudio");
-    let output2 = cmd2
-        .execute_output()
-        .map_err(|e| format!("Failed to run plasma-apply-colorscheme: {}", e))?;
-    fs::remove_file(&swap_path).ok();
+    let output2 = proc::run_with_timeout(
+        "plasma-apply-colorscheme MatugenStudio",
+        PLASMA_APPLY_TIMEOUT,
+    )?;
 
     if !output2.status.success() {
         return Err(String::from_utf8_lossy(&output2.stderr).to_string());
     }
+
+    fs::remove_file(&swap_path).ok();
 
     Ok(())
 }
@@ -833,6 +849,7 @@ pub async fn stop_kde_wallpaper_watcher(
     let snapshot = {
         let mut inner = state.inner.lock().await;
         if let Some(runtime) = inner.runtime.take() {
+            runtime.cancelled.store(true, Ordering::SeqCst);
             runtime.handle.abort();
         }
 
@@ -984,6 +1001,7 @@ async fn start_kde_wallpaper_watcher_inner(
     let snapshot = {
         let mut inner = state.inner.lock().await;
         if let Some(runtime) = inner.runtime.take() {
+            runtime.cancelled.store(true, Ordering::SeqCst);
             runtime.handle.abort();
         }
 
@@ -998,6 +1016,8 @@ async fn start_kde_wallpaper_watcher_inner(
         inner.snapshot.status_message = "Monitoring KDE wallpaper changes.".to_string();
         inner.snapshot.last_error = None;
 
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_for_task = cancelled.clone();
         let app_for_task = app.clone();
         let handle = tauri::async_runtime::spawn(async move {
             kde_wallpaper_watcher_loop(
@@ -1006,10 +1026,11 @@ async fn start_kde_wallpaper_watcher_inner(
                 scheme_type,
                 gtk_enabled,
                 gtk_dark,
+                cancelled_for_task,
             )
             .await;
         });
-        inner.runtime = Some(KdeWatcherRuntime { handle });
+        inner.runtime = Some(KdeWatcherRuntime { handle, cancelled });
         inner.snapshot.clone()
     };
 
@@ -1032,8 +1053,9 @@ async fn kde_wallpaper_watcher_loop(
     scheme_type: String,
     gtk_enabled: bool,
     gtk_dark: bool,
+    cancelled: Arc<AtomicBool>,
 ) {
-    loop {
+    while !cancelled.load(Ordering::SeqCst) {
         match get_current_kde_wallpaper().await {
             Ok(Some(wallpaper)) => {
                 update_watcher_snapshot(&app, |snapshot| {
@@ -1063,6 +1085,7 @@ async fn kde_wallpaper_watcher_loop(
                         scheme_type.clone(),
                         gtk_enabled,
                         gtk_dark,
+                        cancelled.clone(),
                     )
                     .await;
                 }
@@ -1097,6 +1120,7 @@ async fn process_wallpaper_change(
     scheme_type: String,
     gtk_enabled: bool,
     gtk_dark: bool,
+    cancelled: Arc<AtomicBool>,
 ) {
     update_watcher_snapshot(app, |snapshot| {
         snapshot.is_processing = true;
@@ -1111,14 +1135,24 @@ async fn process_wallpaper_change(
     let wallpaper_for_task = wallpaper.clone();
     let scheme_for_task = scheme_type.clone();
     let app_for_task = app.clone();
+    let cancelled_for_task = cancelled.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        if cancelled_for_task.load(Ordering::SeqCst) {
+            return Err("Wallpaper processing cancelled".to_string());
+        }
         let context = crate::commands::color::generate_scheme_from_image_blocking(
             wallpaper_for_task,
             scheme_for_task,
         )?;
+        if cancelled_for_task.load(Ordering::SeqCst) {
+            return Err("Wallpaper processing cancelled".to_string());
+        }
         crate::commands::template::apply_theme_blocking(context.clone())?;
+        if cancelled_for_task.load(Ordering::SeqCst) {
+            return Err("Wallpaper processing cancelled".to_string());
+        }
         apply_kde_colorscheme_blocking(context.clone())?;
-        if gtk_enabled {
+        if gtk_enabled && !cancelled_for_task.load(Ordering::SeqCst) {
             crate::commands::gtk::apply_gtk_theme_blocking(&app_for_task, &context, gtk_dark)?;
         }
         Ok::<(), String>(())
@@ -1126,6 +1160,10 @@ async fn process_wallpaper_change(
     .await
     .map_err(|e| e.to_string())
     .and_then(|result| result);
+
+    if cancelled.load(Ordering::SeqCst) {
+        return;
+    }
 
     match result {
         Ok(()) => {
@@ -1239,4 +1277,65 @@ fn persist_service_status(status: &KdeServiceStatus) -> Result<(), String> {
     let content = serde_json::to_string_pretty(&status).map_err(|e| e.to_string())?;
     fs::write(&path, content).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn color(hex: &str) -> serde_json::Value {
+        serde_json::json!({ "default": { "hex": hex } })
+    }
+
+    fn minimal_context(surface_container_low_hex: &str) -> serde_json::Value {
+        serde_json::json!({
+            "colors": {
+                "surface_container_low": color(surface_container_low_hex),
+                "surface": color("#FFFFFF"),
+            }
+        })
+    }
+
+    /// Regression test for the "Window Background" KDE editor control silently
+    /// recoloring the window titlebar / view rows instead of only the window
+    /// background it is labeled for. `generate_kde_colorscheme` deliberately
+    /// reuses `surface_container_low` for three sections at baseline (visual
+    /// harmony), but a per-control edit must only ever patch the single ini
+    /// property `kde_color_mappings` assigns to that control's key.
+    #[test]
+    fn window_background_override_does_not_leak_into_view_or_titlebar() {
+        let context = minimal_context("#AABBCC");
+        let generated = generate_kde_colorscheme(&context, "Test");
+        let baseline_rgb = rgb_str("#AABBCC");
+        assert_eq!(read_ini_value(&generated, "Colors:Window", "BackgroundNormal"), Some(baseline_rgb.clone()));
+        assert_eq!(read_ini_value(&generated, "Colors:View", "BackgroundAlternate"), Some(baseline_rgb.clone()));
+        assert_eq!(read_ini_value(&generated, "WM", "inactiveBackground"), Some(baseline_rgb.clone()));
+
+        // Simulate what `apply_kde_color_values` does for the "windowBackground"
+        // control: patch only the single ini property it owns.
+        let mapping = kde_color_mappings()
+            .into_iter()
+            .find(|m| m.key == "windowBackground")
+            .expect("windowBackground mapping must exist");
+        let overridden_rgb = hex_to_rgb_string("#F1D46A").unwrap();
+        let patched = upsert_ini_value(&generated, mapping.section, mapping.property, &overridden_rgb);
+
+        // The edited control changes exactly what its label promises...
+        assert_eq!(read_ini_value(&patched, "Colors:Window", "BackgroundNormal"), Some(overridden_rgb));
+        // ...and nothing else that merely happened to share the same base color.
+        assert_eq!(read_ini_value(&patched, "Colors:View", "BackgroundAlternate"), Some(baseline_rgb.clone()));
+        assert_eq!(read_ini_value(&patched, "WM", "inactiveBackground"), Some(baseline_rgb));
+    }
+
+    #[test]
+    fn kde_color_mappings_are_unique_single_properties() {
+        let mappings = kde_color_mappings();
+        for mapping in &mappings {
+            let count = mappings
+                .iter()
+                .filter(|m| m.section == mapping.section && m.property == mapping.property)
+                .count();
+            assert_eq!(count, 1, "{}/{} is mapped by more than one control", mapping.section, mapping.property);
+        }
+    }
 }

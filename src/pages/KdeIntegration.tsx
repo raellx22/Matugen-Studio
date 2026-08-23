@@ -15,15 +15,19 @@ import {
   Square,
 } from "lucide-react";
 
+type ThemeContext = Record<string, unknown>;
+
 interface KdeIntegrationProps {
-  schemeData: any;
+  schemeData: ThemeContext | null;
+  themeContext: ThemeContext | null;
   wallpaperPath: string | null;
   schemeType: string;
   gtkThemeEnabled: boolean;
   gtkThemeDark: boolean;
   onGtkThemeEnabledChange: (enabled: boolean) => void;
   onGtkThemeDarkChange: (dark: boolean) => void;
-  onGenerateFromWallpaper: (path: string) => Promise<{ raw: any; kde: any; effectiveDark: boolean }>;
+  onGenerateFromWallpaper: (path: string) => Promise<{ raw: ThemeContext; kde: ThemeContext; effectiveDark: boolean }>;
+  onApplyKdeColorscheme: (context: ThemeContext) => Promise<void>;
   onNotify?: (message: string, tone?: "success" | "error" | "info") => void;
 }
 
@@ -49,12 +53,14 @@ interface GtkThemeResult {
 
 export default function KdeIntegration({
   schemeData,
+  themeContext,
   schemeType,
   gtkThemeEnabled,
   gtkThemeDark,
   onGtkThemeEnabledChange,
   onGtkThemeDarkChange,
   onGenerateFromWallpaper,
+  onApplyKdeColorscheme,
   onNotify,
 }: KdeIntegrationProps) {
   const { t } = useTranslation();
@@ -179,7 +185,7 @@ export default function KdeIntegration({
     setIsApplyingScheme(true);
     setSchemeApplied(false);
     try {
-      await invoke("apply_kde_colorscheme", { context: schemeData });
+      await onApplyKdeColorscheme(schemeData);
       setSchemeApplied(true);
       setStatusMessage("KDE color scheme applied successfully.");
       onNotify?.("KDE color scheme applied.", "success");
@@ -201,9 +207,9 @@ export default function KdeIntegration({
     try {
       const { raw, kde, effectiveDark } = await onGenerateFromWallpaper(currentKdeWallpaper);
       setStatusMessage("Colors generated. Applying desktop themes...");
-      const tasks: Promise<any>[] = [
+      const tasks: Promise<unknown>[] = [
         invoke("apply_theme", { context: raw }),
-        invoke("apply_kde_colorscheme", { context: kde }),
+        onApplyKdeColorscheme(kde),
       ];
       if (gtkThemeEnabled) {
         onGtkThemeDarkChange(effectiveDark);
@@ -224,7 +230,7 @@ export default function KdeIntegration({
   };
 
   const applyGtkTheme = async (dark: boolean) => {
-    if (!schemeData) {
+    if (!themeContext) {
       onNotify?.("Generate a color palette first from the Colors or Source tab.", "error");
       return;
     }
@@ -233,7 +239,7 @@ export default function KdeIntegration({
     onGtkThemeEnabledChange(true);
     setIsApplyingGtk(true);
     try {
-      const result = await invoke<GtkThemeResult>("apply_gtk_theme", { context: schemeData, dark });
+      const result = await invoke<GtkThemeResult>("apply_gtk_theme", { context: themeContext, dark });
       setGtkAppliedTheme(result.themeName);
       setStatusMessage(`GTK theme applied: ${result.themeName}`);
       const warningText = result.warnings.filter(Boolean).join("\n");
