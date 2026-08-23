@@ -1,10 +1,15 @@
-use execute::{shell, Execute};
+use crate::commands::proc;
 use regex::Regex;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 use tauri::Manager;
+
+/// Upper bound for the small `gsettings`/reload commands issued while
+/// applying a GTK theme.
+const GTK_HOOK_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +75,7 @@ pub fn apply_gtk_theme_blocking(
     copy_dir_all(&source_dir, &target_dir)?;
 
     write_index_theme(&target_dir, theme_name, dark)?;
-    recolor_theme_css(&target_dir, &gtk_palette(context))?;
+    recolor_theme_css(&target_dir, &gtk_palette(context)?)?;
     install_gtk4_user_css(&target_dir)?;
     let warnings = apply_gtk_settings(theme_name, dark)?;
 
@@ -269,59 +274,65 @@ fn css_var_regex(name: &str) -> Regex {
     .unwrap()
 }
 
-fn gtk_palette(context: &serde_json::Value) -> GtkPalette {
-    GtkPalette {
-        primary: get_color(context, "primary", "default"),
-        on_primary: get_color(context, "on_primary", "default"),
-        secondary: get_color(context, "secondary", "default"),
-        on_secondary: get_color(context, "on_secondary", "default"),
-        tertiary: get_color(context, "tertiary", "default"),
-        on_tertiary: get_color(context, "on_tertiary", "default"),
-        error: get_color(context, "error", "default"),
-        on_error: get_color(context, "on_error", "default"),
-        surface: get_color(context, "surface", "default"),
-        on_surface: get_color(context, "on_surface", "default"),
-        surface_container: get_color_or(context, "surface_container", "surface", "default"),
-        surface_container_high: get_color_or(
+fn gtk_palette(context: &serde_json::Value) -> Result<GtkPalette, String> {
+    Ok(GtkPalette {
+        primary: required_color(context, "primary", "default")?,
+        on_primary: required_color(context, "on_primary", "default")?,
+        secondary: required_color(context, "secondary", "default")?,
+        on_secondary: required_color(context, "on_secondary", "default")?,
+        tertiary: required_color(context, "tertiary", "default")?,
+        on_tertiary: required_color(context, "on_tertiary", "default")?,
+        error: required_color(context, "error", "default")?,
+        on_error: required_color(context, "on_error", "default")?,
+        surface: required_color(context, "surface", "default")?,
+        on_surface: required_color(context, "on_surface", "default")?,
+        surface_container: required_color_or(context, "surface_container", "surface", "default")?,
+        surface_container_high: required_color_or(
             context,
             "surface_container_high",
             "surface_variant",
             "default",
-        ),
-        surface_container_low: get_color_or(context, "surface_container_low", "surface", "default"),
-    }
+        )?,
+        surface_container_low: required_color_or(
+            context,
+            "surface_container_low",
+            "surface",
+            "default",
+        )?,
+    })
 }
 
-fn get_color(context: &serde_json::Value, name: &str, variant: &str) -> String {
-    let colors = match context.get("colors") {
-        Some(colors) => colors,
-        None => return "#000000".to_string(),
-    };
-    let group = match colors.get(name) {
-        Some(group) => group,
-        None => return "#000000".to_string(),
-    };
+fn get_color(context: &serde_json::Value, name: &str, variant: &str) -> Option<String> {
+    let colors = context.get("colors")?;
+    let group = colors.get(name)?;
     for variant_name in [variant, "default", "dark", "light"] {
         if let Some(color) = group.get(variant_name) {
             for key in ["hex", "color"] {
                 if let Some(value) = color.get(key).and_then(|value| value.as_str()) {
                     if let Some(hex) = normalize_hex(value) {
-                        return hex;
+                        return Some(hex);
                     }
                 }
             }
         }
     }
-    "#000000".to_string()
+    None
 }
 
-fn get_color_or(context: &serde_json::Value, name: &str, fallback: &str, variant: &str) -> String {
-    let color = get_color(context, name, variant);
-    if color == "#000000" {
-        get_color(context, fallback, variant)
-    } else {
-        color
-    }
+fn required_color(context: &serde_json::Value, name: &str, variant: &str) -> Result<String, String> {
+    get_color(context, name, variant)
+        .ok_or_else(|| format!("Required GTK color '{}' is missing", name))
+}
+
+fn required_color_or(
+    context: &serde_json::Value,
+    name: &str,
+    fallback: &str,
+    variant: &str,
+) -> Result<String, String> {
+    get_color(context, name, variant)
+        .or_else(|| get_color(context, fallback, variant))
+        .ok_or_else(|| format!("Required GTK colors '{}' and '{}' are missing", name, fallback))
 }
 
 fn normalize_hex(value: &str) -> Option<String> {
@@ -495,8 +506,7 @@ fn command_exists(command: &str) -> bool {
 }
 
 fn run_optional_command(command: &str, warnings: &mut Vec<String>) {
-    let mut cmd = shell(command);
-    match cmd.execute_output() {
+    match proc::run_with_timeout(command, GTK_HOOK_TIMEOUT) {
         Ok(output) if output.status.success() => {}
         Ok(output) => warnings.push(String::from_utf8_lossy(&output.stderr).trim().to_string()),
         Err(error) => warnings.push(error.to_string()),

@@ -1,4 +1,4 @@
-use execute::{shell, Execute};
+use crate::commands::proc;
 use matugen_core::parser::Engine;
 use matugen_core::util::config::ConfigFile;
 use matugen_core::State;
@@ -7,8 +7,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, Mutex, OnceLock};
+use std::time::Duration;
 use tauri::Manager;
+
+static TEMPLATE_STORAGE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Upper bound on how long a single template's `post_hook` may run before
+/// it is killed. `post_hook`s are best-effort reload commands (some are
+/// bundled, some are typed in by the user) — a stuck one must not be able
+/// to stall applying colors for every other template behind it.
+const POST_HOOK_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -181,8 +190,6 @@ fn is_matugen_template(path: &Path) -> bool {
     if relative.contains("/nix-hm-example/")
         || relative.ends_with("/README.md")
         || relative.ends_with("/init.lua")
-        || relative.ends_with("/cosmic_postprocess.py")
-        || relative.ends_with("/windows_term_post.ps1")
     {
         return false;
     }
@@ -238,7 +245,7 @@ struct TemplateMetadata {
 fn template_metadata(relative_path: &str, file_name: &str, installable: bool) -> TemplateMetadata {
     let mut meta = TemplateMetadata {
         display_name: friendly_name(file_name),
-        category: "Applications".to_string(),
+        category: "Apps".to_string(),
         target_app: target_from_filename(file_name),
         automation_level: "auto".to_string(),
         installable,
@@ -256,16 +263,15 @@ fn template_metadata(relative_path: &str, file_name: &str, installable: bool) ->
         meta.installable = false;
         meta.default_output_path = None;
         meta.manual_steps = vec![
-            "Enable legacy user profile stylesheets in Firefox-based browsers.".to_string(),
-            "Copy website CSS files into the selected profile chrome/websites directory."
-                .to_string(),
-            "Import the generated colors.css and website CSS files from UserContent.css."
-                .to_string(),
+            "templates.steps.websiteEnableStylesheets".to_string(),
+            "templates.steps.websiteCopyCss".to_string(),
+            "templates.steps.websiteImport".to_string(),
         ];
         return meta;
     }
 
     match file_name {
+        // KDE Plasma / Qt / GTK system theming
         "Matugen.colors" => {
             meta.category = "KDE Plasma".to_string();
             meta.display_name = "KDE Color Scheme".to_string();
@@ -276,9 +282,7 @@ fn template_metadata(relative_path: &str, file_name: &str, installable: bool) ->
             meta.category = "KDE Plasma".to_string();
             meta.target_app = "Kvantum".to_string();
             meta.automation_level = "config-patch".to_string();
-            meta.manual_steps = vec![
-                "Matugen Studio can generate both Kvantum files; selecting the Kvantum engine may still depend on your Plasma setup.".to_string(),
-            ];
+            meta.manual_steps = vec!["templates.steps.kvantumSetTheme".to_string()];
         }
         "qtct-colors.conf" => {
             meta.category = "KDE Plasma".to_string();
@@ -286,35 +290,80 @@ fn template_metadata(relative_path: &str, file_name: &str, installable: bool) ->
             meta.automation_level = "config-patch".to_string();
             meta.required_commands = vec!["qt5ct".to_string(), "qt6ct".to_string()];
             meta.manual_steps = vec![
-                "Set QT_QPA_PLATFORMTHEME to qt6ct when using the qtct path.".to_string(),
-                "Qt style packages such as Breeze or Darkly must be installed by the user."
-                    .to_string(),
+                "templates.steps.qtctPlatformTheme".to_string(),
+                "templates.steps.qtctInstallStyle".to_string(),
             ];
         }
         "gtk-colors.css" => {
             meta.category = "KDE Plasma".to_string();
             meta.target_app = "GTK 3/4".to_string();
             meta.automation_level = "config-patch".to_string();
-            meta.manual_steps =
-                vec!["Import colors.css from gtk.css for GTK 3 and GTK 4.".to_string()];
+            meta.manual_steps = vec!["templates.steps.gtkImportColors".to_string()];
         }
+
+        // Terminals
         "kitty-colors.conf" | "ghostty" | "alacritty.toml" | "wezterm_theme.toml" => {
             meta.category = "Terminals".to_string();
             meta.automation_level = "config-patch".to_string();
         }
-        "terminal-sequences" | "tmux-colors.conf" | "zellij-theme.kdl.tera" => {
+        "terminal-sequences" => {
             meta.category = "Terminals".to_string();
             meta.automation_level = "config-patch".to_string();
         }
+
+        // Shell / CLI productivity tools
+        "tmux-colors.conf" => {
+            meta.category = "Shell Tools".to_string();
+            meta.automation_level = "config-patch".to_string();
+        }
+        "zellij-theme.kdl.tera" => {
+            meta.category = "Shell Tools".to_string();
+            meta.display_name = "Zellij".to_string();
+            meta.target_app = "Zellij".to_string();
+            meta.automation_level = "config-patch".to_string();
+        }
+        "mcfly.toml" => {
+            meta.category = "Shell Tools".to_string();
+            meta.display_name = "McFly".to_string();
+            meta.target_app = "McFly".to_string();
+        }
+        "starship-colors.toml"
+        | "yazi-theme.toml"
+        | "television.toml"
+        | "btop.theme"
+        | "cava-colors.ini"
+        | "opencode-colors.json"
+        | "aerc" => {
+            meta.category = "Shell Tools".to_string();
+        }
+
+        // Browsers
         "firefox-colors.css" | "pywalfox-colors.json" | "vivaldi.css" => {
             meta.category = "Browsers".to_string();
             meta.automation_level = "manual".to_string();
         }
-        "midnight-discord.css" | "spicetify.ini" | "steam.css" | "telegram.tdesktop-theme" => {
-            meta.category = "Apps".to_string();
+        "zen-userchrome.css" | "zen-usercontent.css" => {
+            meta.category = "Browsers".to_string();
+            meta.display_name = if file_name == "zen-userchrome.css" {
+                "Zen Browser (userChrome)".to_string()
+            } else {
+                "Zen Browser (userContent)".to_string()
+            };
+            meta.target_app = "Zen Browser".to_string();
             meta.automation_level = "manual".to_string();
+            meta.manual_steps = vec![
+                "templates.steps.zenEnableStylesheets".to_string(),
+                "templates.steps.zenImportChrome".to_string(),
+            ];
+            meta.related_files = vec![
+                "templates/zen-userchrome.css".to_string(),
+                "templates/zen-usercontent.css".to_string(),
+            ];
         }
-        "nvim-colors.vim" | "template.lua" | "helix.toml" | "zed-colors.json" | "obsidian.css" => {
+
+        // Editors
+        "nvim-colors.vim" | "template.lua" | "helix.toml" | "zed-colors.json" | "obsidian.css"
+        | "micro.micro" => {
             meta.category = "Editors".to_string();
             meta.automation_level = if file_name == "helix.toml" {
                 "config-patch".to_string()
@@ -322,9 +371,80 @@ fn template_metadata(relative_path: &str, file_name: &str, installable: bool) ->
                 "manual".to_string()
             };
         }
-        "rofi-colors.rasi" | "fuzzel.ini" | "waybar.css" | "colors.css" | "swaync" => {
-            meta.category = "Shell".to_string();
+        "vscode-colors" | "vscode-colors.json" => {
+            meta.category = "Editors".to_string();
+            meta.display_name = "VS Code".to_string();
+            meta.target_app = "VS Code".to_string();
+            meta.automation_level = "manual".to_string();
+            meta.manual_steps = vec!["templates.steps.vscodeInstallExtension".to_string()];
+            meta.related_files = vec![
+                "templates/vscode-colors".to_string(),
+                "templates/vscode-colors.json".to_string(),
+            ];
+        }
+
+        // Apps
+        "midnight-discord.css" => {
+            meta.display_name = "Discord (Midnight)".to_string();
+            meta.target_app = "Discord".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "system24.css" => {
+            meta.display_name = "Discord (System24)".to_string();
+            meta.target_app = "Discord".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "spicetify.ini" => {
+            meta.display_name = "Spotify (Spicetify)".to_string();
+            meta.target_app = "Spotify".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "steam.css" => {
+            meta.automation_level = "manual".to_string();
+        }
+        "telegram.tdesktop-theme" => {
+            meta.display_name = "Telegram".to_string();
+            meta.target_app = "Telegram".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "heroic.css" => {
+            meta.target_app = "Heroic Games Launcher".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "prismlauncher.json" => {
+            meta.display_name = "PrismLauncher".to_string();
+            meta.target_app = "PrismLauncher".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "matugen.obt" => {
+            meta.display_name = "OBS Studio".to_string();
+            meta.target_app = "OBS Studio".to_string();
+            meta.automation_level = "manual".to_string();
+        }
+        "rmpc.ron" => {
+            meta.display_name = "Rmpc".to_string();
+            meta.target_app = "Rmpc".to_string();
             meta.automation_level = "config-patch".to_string();
+            meta.manual_steps = vec!["templates.steps.rmpcSetTheme".to_string()];
+        }
+        "wine.reg" => {
+            meta.display_name = "Wine".to_string();
+            meta.target_app = "Wine".to_string();
+            meta.automation_level = "config-patch".to_string();
+        }
+        "zathura-colors" => {
+            meta.display_name = "Zathura".to_string();
+            meta.target_app = "Zathura".to_string();
+        }
+        "papirus-color" => {
+            meta.display_name = "Papirus Folders".to_string();
+            meta.target_app = "Papirus Icon Theme".to_string();
+            meta.automation_level = "manual".to_string();
+            meta.required_commands = vec!["papirus-folders".to_string()];
+            meta.manual_steps = vec![
+                "templates.steps.papirusInstall".to_string(),
+                "templates.steps.papirusPostHook".to_string(),
+            ];
         }
         _ => {}
     }
@@ -332,12 +452,11 @@ fn template_metadata(relative_path: &str, file_name: &str, installable: bool) ->
     if relative_path == "neovim/template.lua" {
         meta.display_name = "Neovim Lua".to_string();
         meta.target_app = "Neovim".to_string();
+        meta.category = "Editors".to_string();
         meta.related_files = vec!["templates/neovim/init.lua".to_string()];
         meta.manual_steps = vec![
-            "Install and configure base16-colorscheme if you want the advanced Lua integration."
-                .to_string(),
-            "Source the generated file from init.lua and register a SIGUSR1 reload hook."
-                .to_string(),
+            "templates.steps.neovimBase16".to_string(),
+            "templates.steps.neovimReloadHook".to_string(),
         ];
     }
 
@@ -378,55 +497,42 @@ fn target_from_filename(file_name: &str) -> String {
 fn default_output_path(file_name: &str) -> Option<&'static str> {
     match file_name {
         "Matugen.colors" => Some("~/.local/share/color-schemes/Matugen.colors"),
+        "aerc" => Some("~/.config/aerc/stylesets/matugen"),
         "alacritty.toml" => Some("~/.config/alacritty/colors.toml"),
         "btop.theme" => Some("~/.config/btop/themes/matugen.theme"),
         "cava-colors.ini" => Some("~/.config/cava/themes/matugen"),
-        "clipse_theme.json" => Some("~/.config/clipse/custom_theme.json"),
-        "colors.css" => Some("~/.config/matugen/colors.css"),
-        "cosmic_theme.ron" => Some("~/.config/matugen/themes/matugen_cosmic.theme.ron"),
-        "dunstrc-colors" => Some("~/.config/dunst/dunstrc"),
         "firefox-colors.css" => Some("~/.cache/matugen/firefox/colors.css"),
-        "fuzzel.ini" => Some("~/.config/fuzzel/colors.ini"),
         "ghostty" => Some("~/.config/ghostty/themes/Matugen"),
         "gtk-colors.css" => Some("~/.config/gtk-4.0/colors.css"),
         "helix.toml" => Some("~/.config/helix/themes/matugen.toml"),
-        "heroic.css" => Some("~/.config/heroic/themes/matugen.css"),
-        "hyprland-colors.conf" => Some("~/.config/hypr/colors.conf"),
         "kitty-colors.conf" => Some("~/.config/kitty/themes/Matugen.conf"),
         "kvantum-colors.kvconfig" => Some("~/.config/Kvantum/matugen/matugen.kvconfig"),
         "kvantum-colors.svg" => Some("~/.config/Kvantum/matugen/matugen.svg"),
-        "labwc" => Some("~/.config/labwc/themerc-override"),
-        "mako" => Some("~/.config/mako/mako-colors"),
-        "mango.conf" => Some("~/.config/mango/colors.conf"),
         "matugen.obt" => Some("~/.config/obs-studio/themes/matugen.obt"),
         "mcfly.toml" => Some("~/.local/share/mcfly/config.toml"),
         "micro.micro" => Some("~/.config/micro/colorschemes/matugen.micro"),
         "midnight-discord.css" => Some("~/.config/vesktop/themes/midnight-discord.css"),
-        "niri-colors.kdl" => Some("~/.config/niri/colors.kdl"),
         "nvim-colors.vim" => Some("~/.config/nvim/colors/matugen.vim"),
         "obsidian.css" => Some("~/Documents/ObsidianVault/.obsidian/snippets/matugen.css"),
         "opencode-colors.json" => Some("~/.config/opencode/themes/matugen.json"),
+        "papirus-color" => Some("~/.cache/matugen/papirus-color"),
         "prismlauncher.json" => Some("~/.local/share/PrismLauncher/themes/Matugen/theme.json"),
         "pywalfox-colors.json" => Some("~/.cache/wal/colors.json"),
         "qtct-colors.conf" => Some("~/.config/qt6ct/colors/matugen.conf"),
-        "quickshell.json" => Some("~/.local/state/quickshell/generated/colors.json"),
-        "quickshell.qml" => Some("~/.config/quickshell/Colors.qml"),
         "rmpc.ron" => Some("~/.config/rmpc/themes/matugen.ron"),
-        "rofi-colors.rasi" => Some("~/.config/rofi/colors.rasi"),
         "spicetify.ini" => Some("~/.config/spicetify/Themes/Sleek/color.ini"),
         "starship-colors.toml" => Some("~/.config/starship.toml"),
         "steam.css" => Some("~/.config/AdwSteamGtk/custom.css"),
-        "sway-colors.conf" => Some("~/.config/sway/colors.conf"),
+        "system24.css" => Some("~/.config/vesktop/themes/system24.css"),
         "telegram.tdesktop-theme" => Some("~/Downloads/matugen.tdesktop-theme"),
         "television.toml" => Some("~/.config/television/themes/matugen.toml"),
         "terminal-sequences" => Some("~/.cache/terminal-sequences"),
         "tmux-colors.conf" => Some("~/.config/tmux/generated.conf"),
         "vivaldi.css" => Some("~/.config/vivaldi-matugen/vivaldi.css"),
-        "waybar.css" => Some("~/.config/waybar/colors.css"),
+        "vscode-colors" => Some("~/.cache/matugen/vscode-colors"),
+        "vscode-colors.json" => Some("~/.cache/matugen/vscode-colors.json"),
         "wezterm_theme.toml" => Some("~/.config/wezterm/colors/matugen_theme.toml"),
         "wine.reg" => Some("/tmp/wine.reg"),
-        "windows_term.json" => Some("C:\\Windows\\Temp\\matugen_windows_term.json"),
-        "wlogout.css" => Some("~/.config/wlogout/colors.css"),
         "yazi-theme.toml" => Some("~/.config/yazi/theme.toml"),
         "zathura-colors" => Some("~/.config/zathura/zathurarc"),
         "zed-colors.json" => Some("~/.config/zed/themes/matugen.json"),
@@ -439,22 +545,14 @@ fn default_post_hook(file_name: &str) -> Option<&'static str> {
     match file_name {
         "Matugen.colors" => Some("plasma-apply-colorscheme Matugen"),
         "btop.theme" => Some("pkill -USR2 btop || true"),
-        "dunstrc-colors" => Some("dunstctl reload"),
         "ghostty" => Some("pkill -SIGUSR2 ghostty"),
         "kitty-colors.conf" => Some("kitty +kitten themes --reload-in=all Matugen"),
-        "labwc" => Some("labwc -reload"),
-        "mako" => Some("makoctl reload"),
-        "mango.conf" => Some("mmsg -d reload_config"),
-        "niri-colors.kdl" => Some("niri msg action load-config-file"),
         "nvim-colors.vim" | "template.lua" => Some("pkill -SIGUSR1 nvim"),
         "pywalfox-colors.json" => Some("pywalfox update"),
         "spicetify.ini" => Some("spicetify watch -s 2>&1 | sed \"/Reloaded Spotify/q\""),
         "steam.css" => Some("adwaita-steam-gtk -i"),
-        "sway-colors.conf" => Some("swaymsg reload"),
-        "swaync.css" => Some("swaync-client -rs"),
         "terminal-sequences" => Some("cat ~/.cache/terminal-sequences > /dev/pts/[0-9]*"),
         "tmux-colors.conf" => Some("tmux source-file ~/.config/tmux/generated.conf"),
-        "waybar.css" => Some("pkill -SIGUSR2 waybar"),
         "wezterm_theme.toml" => Some("touch ~/.config/wezterm/wezterm.lua"),
         "wine.reg" => Some("wine regedit /tmp/wine.reg"),
         "zellij-theme.kdl.tera" => Some("touch ~/.config/zellij/config.kdl"),
@@ -464,28 +562,33 @@ fn default_post_hook(file_name: &str) -> Option<&'static str> {
 
 fn manual_steps(file_name: &str) -> Vec<String> {
     match file_name {
-        "alacritty.toml" => vec!["Add import = [\"colors.toml\"] to alacritty.toml.".to_string()],
-        "btop.theme" => vec!["Choose the matugen theme once from btop settings.".to_string()],
-        "cava-colors.ini" => vec!["Set theme = 'matugen' in ~/.config/cava/config.".to_string()],
-        "fuzzel.ini" => vec!["Include ~/.config/fuzzel/colors.ini from fuzzel.ini.".to_string()],
-        "ghostty" => vec!["Set theme = \"Matugen\" in ~/.config/ghostty/config.".to_string()],
-        "helix.toml" => vec!["Set theme = \"matugen\" in ~/.config/helix/config.toml.".to_string()],
-        "kitty-colors.conf" => {
-            vec!["Apply the Matugen theme once with kitty kitten themes.".to_string()]
+        "aerc" => vec!["templates.steps.aercStyleset".to_string()],
+        "alacritty.toml" => vec!["templates.steps.alacrittyImport".to_string()],
+        "btop.theme" => vec!["templates.steps.btopChooseTheme".to_string()],
+        "cava-colors.ini" => vec!["templates.steps.cavaSetTheme".to_string()],
+        "ghostty" => vec!["templates.steps.ghosttySetTheme".to_string()],
+        "helix.toml" => vec!["templates.steps.helixSetTheme".to_string()],
+        "kitty-colors.conf" => vec!["templates.steps.kittyApplyTheme".to_string()],
+        "midnight-discord.css" | "system24.css" => {
+            vec!["templates.steps.discordActivate".to_string()]
         }
-        "mako" => vec!["Add include=~/.config/mako/mako-colors to mako config.".to_string()],
-        "midnight-discord.css" => {
-            vec!["Activate the generated theme from Vencord/Vesktop settings.".to_string()]
-        }
+        "spicetify.ini" => vec![
+            "templates.steps.spicetifyConfig".to_string(),
+            "templates.steps.spicetifyDownloadSleek".to_string(),
+        ],
+        "steam.css" => vec![
+            "templates.steps.steamInstallAdwSteamGtk".to_string(),
+            "templates.steps.steamEnableCustomCss".to_string(),
+        ],
         "telegram.tdesktop-theme" => vec![
-            "Telegram cannot apply themes automatically.".to_string(),
-            "Send the generated .tdesktop-theme file to any chat, open it, then apply it."
-                .to_string(),
+            "templates.steps.telegramManualIntro".to_string(),
+            "templates.steps.telegramApply".to_string(),
         ],
         "vivaldi.css" => vec![
-            "Enable CSS modifications in vivaldi://experiments.".to_string(),
-            "Select the generated CSS folder in Vivaldi appearance settings.".to_string(),
+            "templates.steps.vivaldiEnableExperiment".to_string(),
+            "templates.steps.vivaldiSelectFolder".to_string(),
         ],
+        "zellij-theme.kdl.tera" => vec!["templates.steps.zellijAddTheme".to_string()],
         _ => vec![],
     }
 }
@@ -529,30 +632,44 @@ pub fn list_available_templates(themes_dir: String) -> Result<Vec<TemplateInfo>,
 
 #[tauri::command]
 pub fn preview_template(
+    app: tauri::AppHandle,
     template_path: String,
     context: serde_json::Value,
 ) -> Result<String, String> {
+    let requested = PathBuf::from(&template_path)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve template path: {}", e))?;
+    let bundled = bundled_themes_dir(&app)?
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let user_templates = dirs::config_dir()
+        .ok_or("Could not find config directory")?
+        .join("matugen/templates");
+    let allowed_user_path = user_templates
+        .canonicalize()
+        .map(|root| requested.starts_with(root))
+        .unwrap_or(false);
+    if !requested.starts_with(&bundled) && !allowed_user_path {
+        return Err("Template preview is restricted to managed template directories".to_string());
+    }
+
     let mut engine = Engine::new();
-
-    // Register filters
     State::add_engine_filters(&mut engine);
-
-    // Read the template file
-    let source = fs::read_to_string(&template_path)
+    let source = fs::read_to_string(&requested)
         .map_err(|e| format!("Failed to read template: {}", e))?;
-
-    engine.add_template("preview".to_string(), source);
-    engine.add_context(context);
-
-    let result = engine.render("preview").map_err(|errs| {
-        let mut err_msg = String::new();
-        for err in errs {
-            err_msg.push_str(&format!("{:?}\n", err));
-        }
-        err_msg
-    })?;
-
-    Ok(result)
+    engine
+        .add_template("preview".to_string(), source)
+        .map_err(|error| format!("Failed to parse template: {}", error))?;
+    engine
+        .add_context(context)
+        .map_err(|error| format!("Invalid template context: {}", error))?;
+    engine.render("preview").map_err(|errors| {
+        errors
+            .into_iter()
+            .map(|error| format!("{:?}", error))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 #[tauri::command]
@@ -562,15 +679,17 @@ pub fn install_template(
     output_path: String,
     post_hook: Option<String>,
 ) -> Result<(), String> {
+    let _guard = TEMPLATE_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
     let config_dir = matugen_config_dir()?;
 
     let templates_dir = config_dir.join("templates");
     fs::create_dir_all(&templates_dir).map_err(|e| e.to_string())?;
-
-    let dest_path = templates_dir.join(&template_name);
-    if let Some(parent) = dest_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
+    let safe_name = Path::new(&template_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| *name == template_name && !name.contains(".."))
+        .ok_or("Invalid template name")?;
+    let dest_path = templates_dir.join(safe_name);
     fs::copy(&template_path, &dest_path).map_err(|e| e.to_string())?;
 
     let config_path = config_dir.join("config.toml");
@@ -595,19 +714,48 @@ pub fn install_template(
     config_content.push_str(&format!("\n[templates.{}]\n", name_key));
     config_content.push_str(&format!(
         "input_path = \"{}\"\n",
-        dest_path.to_string_lossy()
+        escape_toml_string(&dest_path.to_string_lossy())
     ));
-    config_content.push_str(&format!("output_path = \"{}\"\n", output_path));
+    config_content.push_str(&format!(
+        "output_path = \"{}\"\n",
+        escape_toml_string(&output_path)
+    ));
 
     if let Some(hook) = post_hook {
         if !hook.trim().is_empty() {
-            config_content.push_str(&format!("post_hook = \"{}\"\n", hook.trim()));
+            config_content.push_str(&format!(
+                "post_hook = \"{}\"\n",
+                escape_toml_string(hook.trim())
+            ));
         }
     }
 
-    fs::write(&config_path, config_content).map_err(|e| e.to_string())?;
+    atomic_write_text(&config_path, &config_content)?;
 
     Ok(())
+}
+
+fn escape_toml_string(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c != '\r')
+        .fold(String::with_capacity(s.len()), |mut acc, c| {
+            match c {
+                '\\' => acc.push_str("\\\\"),
+                '"' => acc.push_str("\\\""),
+                '\n' => acc.push_str("\\n"),
+                _ => acc.push(c),
+            }
+            acc
+        })
+}
+
+fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
+    let temp_path = path.with_extension("tmp");
+    fs::write(&temp_path, content).map_err(|e| e.to_string())?;
+    fs::rename(&temp_path, path).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        e.to_string()
+    })
 }
 
 fn expand_tilde(path: &PathBuf) -> PathBuf {
@@ -649,8 +797,14 @@ fn read_template_overrides() -> Result<TemplateOverrides, String> {
 fn write_template_overrides(overrides: &TemplateOverrides) -> Result<(), String> {
     let config_dir = studio_config_dir()?;
     fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+    let path = config_dir.join("template-overrides.json");
+    let temp_path = config_dir.join("template-overrides.json.tmp");
     let content = serde_json::to_string_pretty(overrides).map_err(|e| e.to_string())?;
-    fs::write(config_dir.join("template-overrides.json"), content).map_err(|e| e.to_string())
+    fs::write(&temp_path, content).map_err(|e| e.to_string())?;
+    fs::rename(&temp_path, &path).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        e.to_string()
+    })
 }
 
 fn hex_regex() -> &'static Regex {
@@ -870,8 +1024,12 @@ fn render_template(
 ) -> Result<String, String> {
     let mut engine = Engine::new();
     State::add_engine_filters(&mut engine);
-    engine.add_context(context);
-    engine.add_template(name.to_string(), source);
+    engine
+        .add_context(context)
+        .map_err(|error| format!("Invalid template context: {}", error))?;
+    engine
+        .add_template(name.to_string(), source)
+        .map_err(|error| format!("Failed to parse template '{}': {}", name, error))?;
 
     engine.render(name).map_err(|errs| {
         let mut err_msg = String::new();
@@ -941,6 +1099,10 @@ fn list_template_color_controls_blocking(
             .into_iter()
             .map(|control| {
                 let override_hex = template_overrides.and_then(|values| values.get(&control.key));
+                let true_original = override_hex
+                    .and_then(|value| value.original_hex())
+                    .unwrap_or(&control.original_hex)
+                    .to_string();
                 TemplateColorControl {
                     key: control.key,
                     name: control.name,
@@ -948,8 +1110,8 @@ fn list_template_color_controls_blocking(
                     source_path: control.source_path,
                     current_hex: override_hex
                         .map(|value| value.hex().to_string())
-                        .unwrap_or_else(|| control.original_hex.clone()),
-                    original_hex: control.original_hex,
+                        .unwrap_or_else(|| true_original.clone()),
+                    original_hex: true_original,
                     overridden: override_hex.is_some(),
                 }
             })
@@ -986,8 +1148,8 @@ pub fn set_template_color_override(
     hex: String,
     original_hex: Option<String>,
 ) -> Result<(), String> {
+    let _guard = TEMPLATE_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
     let hex = validate_hex(&hex)?;
-    let original_hex = original_hex.as_deref().map(validate_hex).transpose()?;
     let mut overrides = read_template_overrides()?;
     overrides
         .templates
@@ -1005,9 +1167,9 @@ pub fn reset_template_color_override(
     template_name: String,
     token_key: Option<String>,
 ) -> Result<(), String> {
+    let _guard = TEMPLATE_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
     let mut overrides = read_template_overrides()?;
     let mut restore_values = HashMap::new();
-
     if let Some(token_key) = token_key {
         if let Some(values) = overrides.templates.get_mut(&template_name) {
             if let Some(color_override) = values.remove(&token_key) {
@@ -1139,8 +1301,11 @@ pub fn apply_theme_blocking(context: serde_json::Value) -> Result<(), String> {
 
             if fs::write(&out_abs, result).is_ok() {
                 if let Some(hook) = &template.post_hook {
-                    let mut cmd = shell(hook);
-                    cmd.execute().ok();
+                    // Bounded: an installed template's post_hook is arbitrary
+                    // user/third-party shell (e.g. a Spicetify watcher that
+                    // never sees Spotify reload) and must never be able to
+                    // stall the whole "apply colors" flow.
+                    proc::run_ignoring_result(hook, POST_HOOK_TIMEOUT);
                 }
             }
         }
@@ -1174,10 +1339,16 @@ pub fn get_installed_templates() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn uninstall_template(template_name: String) -> Result<(), String> {
+    let _guard = TEMPLATE_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
+    let safe_name = Path::new(&template_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| *name == template_name && !name.contains(".."))
+        .ok_or("Invalid template name")?;
     let config_dir = matugen_config_dir()?;
 
-    let name_key = sanitize_template_key(&template_name);
-    let dest_path = config_dir.join("templates").join(&template_name);
+    let name_key = sanitize_template_key(safe_name);
+    let dest_path = config_dir.join("templates").join(safe_name);
 
     if dest_path.exists() {
         fs::remove_file(&dest_path).ok();
@@ -1200,7 +1371,7 @@ pub fn uninstall_template(template_name: String) -> Result<(), String> {
                 new_lines.push(line);
             }
         }
-        fs::write(&config_path, new_lines.join("\n")).map_err(|e| e.to_string())?;
+        atomic_write_text(&config_path, &new_lines.join("\n"))?;
     }
 
     Ok(())
@@ -1211,4 +1382,132 @@ fn sanitize_template_key(template_name: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bundled_templates() -> Vec<TemplateInfo> {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("matugen-themes");
+        list_templates_from_themes_dir(dir).expect("bundled templates directory must be readable")
+    }
+
+    #[test]
+    fn windows_paths_are_valid_inside_toml_strings() {
+        let path = r#"C:\Windows\Temp\matugen_windows_term.json"#;
+        let document = format!("output_path = \"{}\"", escape_toml_string(path));
+        let parsed: toml::Value = toml::from_str(&document).unwrap();
+        assert_eq!(parsed["output_path"].as_str(), Some(path));
+    }
+
+    /// The app targets KDE Plasma only: tiling-Wayland-compositor tooling
+    /// (Hyprland, Niri, Sway, Cosmic, GNOME Shell, ...) must never resurface
+    /// in the bundled catalog, even if a future upstream sync re-adds the
+    /// files under a new name.
+    #[test]
+    fn bundled_catalog_has_no_leftover_non_kde_wm_templates() {
+        let templates = bundled_templates();
+        assert!(!templates.is_empty());
+
+        let banned_needles = [
+            "hyprland",
+            "hyprwat",
+            "niri",
+            "sway",
+            "labwc",
+            "mango",
+            "cosmic",
+            "gnome-shell",
+            "rofi",
+            "fuzzel",
+            "waybar",
+            "wofi",
+            "swaync",
+            "mako",
+            "quickshell",
+            "dunst",
+            "clipse",
+            "windows_term",
+        ];
+        for template in &templates {
+            let haystack = format!(
+                "{} {} {}",
+                template.relative_path.to_lowercase(),
+                template.display_name.to_lowercase(),
+                template.target_app.to_lowercase()
+            );
+            for needle in banned_needles {
+                assert!(
+                    !haystack.contains(needle),
+                    "template '{}' should have been filtered out (matched '{}')",
+                    template.relative_path,
+                    needle
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_catalog_includes_newly_added_kde_relevant_templates() {
+        let templates = bundled_templates();
+        let names: Vec<&str> = templates.iter().map(|t| t.relative_path.as_str()).collect();
+        for expected in [
+            "aerc",
+            "system24.css",
+            "vscode-colors",
+            "vscode-colors.json",
+            "zen-userchrome.css",
+            "zen-usercontent.css",
+            "papirus-color",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "missing newly added template: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_bundled_template_has_a_curated_category() {
+        let templates = bundled_templates();
+        let allowed = [
+            "KDE Plasma",
+            "Terminals",
+            "Shell Tools",
+            "Browsers",
+            "Editors",
+            "Apps",
+            "Websites",
+        ];
+        for template in &templates {
+            assert!(
+                allowed.contains(&template.category.as_str()),
+                "template '{}' has unexpected category '{}'",
+                template.relative_path,
+                template.category
+            );
+        }
+    }
+
+    /// Manual-step text must be localizable: every entry is required to be a
+    /// stable `templates.steps.<key>` i18n lookup key (translated client-side
+    /// per the app's active language) rather than a hardcoded English
+    /// sentence baked into the backend.
+    #[test]
+    fn manual_steps_are_i18n_keys_not_literal_english_text() {
+        let templates = bundled_templates();
+        for template in &templates {
+            for step in &template.manual_steps {
+                assert!(
+                    step.starts_with("templates.steps."),
+                    "template '{}' has a manual step that isn't an i18n key: '{}'",
+                    template.relative_path,
+                    step
+                );
+            }
+        }
+    }
 }

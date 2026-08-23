@@ -21,7 +21,13 @@ interface TemplateInfo {
 }
 
 interface TemplatesProps {
-  schemeData: any;
+  schemeData: Record<string, unknown> | null;
+}
+
+interface DiscordClient {
+  name: string;
+  path: string;
+  exists: boolean;
 }
 
 export default function Templates({ schemeData }: TemplatesProps) {
@@ -31,13 +37,14 @@ export default function Templates({ schemeData }: TemplatesProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState("All");
   const [previewContent, setPreviewContent] = useState<string | null>(null);
+
   const [previewName, setPreviewName] = useState<string | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [installTemplate, setInstallTemplate] = useState<TemplateInfo | null>(null);
   const [outputPath, setOutputPath] = useState("");
   const [postHook, setPostHook] = useState("");
   const [isInstalling, setIsInstalling] = useState(false);
-  const [discordClients, setDiscordClients] = useState<any[]>([]);
+  const [discordClients, setDiscordClients] = useState<DiscordClient[]>([]);
 
   // We add an effect to check Discord clients when the modal opens for midnight-discord.css
   useEffect(() => {
@@ -49,8 +56,11 @@ export default function Templates({ schemeData }: TemplatesProps) {
   const checkDiscordClients = async () => {
     const clients = [
       { name: "Vesktop", path: "~/.config/vesktop" },
+      { name: "Vesktop (Flatpak)", path: "~/.var/app/dev.vencord.Vesktop/config/vesktop" },
       { name: "Equibop", path: "~/.config/equibop" },
-      { name: "Vencord", path: "~/.config/Vencord" }
+      { name: "Equibop (Flatpak)", path: "~/.var/app/io.github.equicord.equibop/config/equibop" },
+      { name: "Vencord", path: "~/.config/Vencord" },
+      { name: "Discord (Flatpak)", path: "~/.var/app/com.discordapp.Discord/config/discord" },
     ];
     
     const results = await Promise.all(
@@ -109,9 +119,9 @@ export default function Templates({ schemeData }: TemplatesProps) {
   };
 
   const automationLabel = (level: string) => {
-    if (level === "auto") return "Auto";
-    if (level === "config-patch") return "Config";
-    return "Manual";
+    if (level === "auto") return t('templates.automation.auto');
+    if (level === "config-patch") return t('templates.automation.config');
+    return t('templates.automation.manual');
   };
 
   const automationColor = (level: string) => {
@@ -318,7 +328,7 @@ export default function Templates({ schemeData }: TemplatesProps) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.035)' }}>
                   <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.manualStepsNeeded')}</label>
                   {installTemplate.manualSteps.map((step, idx) => (
-                    <span key={idx} style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>{idx + 1}. {step}</span>
+                    <span key={idx} style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>{idx + 1}. {t(step, { defaultValue: step })}</span>
                   ))}
                 </div>
               )}

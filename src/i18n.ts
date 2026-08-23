@@ -12,7 +12,9 @@ const resources = {
         templates: "Apps",
         desktop: "Automation",
         apply: "Apply All",
-        settings: "Settings"
+        settings: "Settings",
+        collapse: "Collapse sidebar",
+        expand: "Expand sidebar"
       },
       settings: {
         title: "Settings",
@@ -20,7 +22,15 @@ const resources = {
         language: "Language",
         languageDescription: "Choose the application language.",
         wallpapersPerPage: "Wallpapers per page",
-        wallpapersPerPageDescription: "Controls how many wallpapers are loaded at once in sources. Lower values reduce memory usage and improve performance in large folders."
+        wallpapersPerPageDescription: "Controls how many wallpapers are loaded at once in sources. Lower values reduce memory usage and improve performance in large folders.",
+        wallhavenTitle: "Wallhaven",
+        wallhavenDescription: "Optional API key to unlock NSFW content and your account's rate limits.",
+        wallhavenGetKey: "Get a key",
+        wallhavenKeyPlaceholder: "Wallhaven API key",
+        wallhavenValidate: "Validate",
+        wallhavenValidating: "Validating...",
+        wallhavenKeyValid: "Key is valid",
+        wallhavenKeyInvalid: "Invalid key"
       },
       colors: {
         title: "Appearance",
@@ -91,7 +101,9 @@ const resources = {
         nextPage: "Next page",
         next: "Next",
         thumbnailLoading: "Loading thumbnail...",
-        thumbnailUnavailable: "Thumbnail unavailable"
+        thumbnailUnavailable: "Thumbnail unavailable",
+        tabLocal: "Local",
+        tabWallhaven: "Wallhaven"
       },
       presets: {
         title: "Theme Presets",
@@ -147,7 +159,46 @@ const resources = {
         preview: "Preview",
         remove: "Remove",
         guide: "Guide",
-        removeConfirm: "Are you sure you want to remove {{name}} from your active templates?"
+        removeConfirm: "Are you sure you want to remove {{name}} from your active templates?",
+        automation: {
+          auto: "Automatic",
+          config: "One-time setup",
+          manual: "Manual steps"
+        },
+        steps: {
+          aercStyleset: "Open ~/.config/aerc/aerc.conf and, under the [ui] section, add the line styleset-name=matugen. Restart Aerc to see the new colors.",
+          alacrittyImport: "Open your alacritty.toml file and add the line import = [\"colors.toml\"] near the top. Alacritty picks up the new colors the next time it opens.",
+          btopChooseTheme: "Open btop, press Esc to open Options, and under Theme pick \"matugen\" from the list. You only need to do this once — future color updates apply automatically.",
+          cavaSetTheme: "Open ~/.config/cava/config and set theme = 'matugen'. Restart Cava (press q, then reopen it) to apply the new colors.",
+          ghosttySetTheme: "Open ~/.config/ghostty/config and add the line theme = \"Matugen\". Ghostty reloads the theme automatically whenever colors are regenerated.",
+          helixSetTheme: "Open ~/.config/helix/config.toml and add the line theme = \"matugen\". Restart Helix (or reload the config) to see the new colors.",
+          kittyApplyTheme: "Open a terminal and run kitten themes, then select \"Matugen\" from the list. You only need to do this once — Kitty keeps the theme in sync after that.",
+          discordActivate: "Open Discord (or Vesktop), go to Settings > Vencord > Themes, and enable the generated theme file from the list.",
+          spicetifyConfig: "Open ~/.config/spicetify/config-xpui.ini and set color_scheme = matugen and current_theme = Sleek.",
+          spicetifyDownloadSleek: "Download the Sleek theme once by running: curl -L --create-dirs -o ~/.config/spicetify/Themes/Sleek/user.css https://raw.githubusercontent.com/spicetify/spicetify-themes/master/Sleek/user.css",
+          steamInstallAdwSteamGtk: "Install the adwsteamgtk package for your Linux distribution (search your package manager for \"adwsteamgtk\").",
+          steamEnableCustomCss: "Open AdwSteamGtk, go to Preferences, and enable \"Custom CSS\".",
+          telegramManualIntro: "Telegram cannot apply themes on its own — you need to install this one by hand, once.",
+          telegramApply: "Open Telegram, drag the generated theme file into any chat, send it, then open the sent file and tap \"Apply\".",
+          vivaldiEnableExperiment: "In Vivaldi, open vivaldi://experiments and enable \"Allow for using CSS modifications\".",
+          vivaldiSelectFolder: "Go to Settings > Appearance > Custom UI Modifications and select the folder where the generated CSS file is saved.",
+          zellijAddTheme: "Open ~/.config/zellij/config.kdl and add the line theme \"matugen\". Restart any open Zellij sessions to see the new colors.",
+          kvantumSetTheme: "Open ~/.config/Kvantum/kvantum.kvconfig and, under [General], set theme=matugen. You only need to do this once.",
+          qtctPlatformTheme: "Set the environment variable QT_QPA_PLATFORMTHEME to qt6ct (add it to your shell profile or session settings) so Qt apps use this color scheme.",
+          qtctInstallStyle: "Install a Qt style that supports custom palettes, such as Breeze or Darkly, if you don't already have one.",
+          gtkImportColors: "Add the line @import 'colors.css'; to the top of both ~/.config/gtk-3.0/gtk.css and ~/.config/gtk-4.0/gtk.css.",
+          zenEnableStylesheets: "In Zen Browser, open about:config and set toolkit.legacyUserProfileCustomizations.stylesheets to true.",
+          zenImportChrome: "Create a chrome folder inside your Zen profile, then import both generated files (userChrome.css and userContent.css) using absolute file paths.",
+          vscodeInstallExtension: "Install the \"Matugen Theme\" extension from the VS Code Marketplace (Open VSX if you use VSCodium), then select it from your color theme list.",
+          rmpcSetTheme: "Open ~/.config/rmpc/config.ron and set theme: Some(\"matugen\"). Restart rmpc to see the new colors.",
+          papirusInstall: "Install the papirus-folders tool and allow it to run without a password prompt — it needs sudo to recolor system icons.",
+          papirusPostHook: "In the template's advanced settings, add a command that runs papirus-folders after colors are generated so the icon folders update automatically.",
+          websiteEnableStylesheets: "In your Firefox-based browser, open about:config and set toolkit.legacyUserProfileCustomizations.stylesheets to true.",
+          websiteCopyCss: "Create a chrome folder inside your browser profile and copy this website's CSS file into it.",
+          websiteImport: "Import the generated colors.css and this website's CSS file from your profile's userContent.css using absolute paths.",
+          neovimBase16: "If you want the full plugin-based integration, install and configure base16-colorscheme.nvim — see the bundled README for details.",
+          neovimReloadHook: "Load the generated file from your init.lua and set up a SIGUSR1 autocmd so Neovim reloads colors automatically."
+        }
       },
       desktop: {
         title: "Automation",
@@ -179,6 +230,65 @@ const resources = {
         dark: "Dark",
         applyGtkTheme: "Apply GTK Theme",
         gtkApplied: "{{name}} applied."
+      },
+      wallhaven: {
+        searchPlaceholder: "Search Wallhaven (tags, +tag -tag, @uploader, id:123)...",
+        category: {
+          general: "General",
+          anime: "Anime",
+          people: "People"
+        },
+        sketchy: "Sketchy",
+        sketchyHint: "Includes borderline content.",
+        nsfw: "NSFW",
+        nsfwHint: "Toggle NSFW content, allowed by your Wallhaven account.",
+        nsfwNeedsKey: "Add a valid Wallhaven API key in Settings to unlock NSFW.",
+        nsfwDisclaimerTitle: "Before enabling NSFW",
+        nsfwDisclaimerBody: "This unlocks wallpapers flagged NSFW on Wallhaven, gated entirely by your own Wallhaven account and API key. Matugen Studio does not host, moderate, or filter this content — the purity settings on your Wallhaven account still apply. Enable it only if you understand what you're browsing.",
+        nsfwDisclaimerConfirm: "I understand, enable it",
+        sorting: {
+          date_added: "Newest",
+          relevance: "Relevance",
+          random: "Random",
+          views: "Most viewed",
+          favorites: "Most favorited",
+          toplist: "Top rated"
+        },
+        orderDesc: "Descending",
+        orderAsc: "Ascending",
+        topRange: {
+          "1d": "Last day",
+          "3d": "Last 3 days",
+          "1w": "Last week",
+          "1M": "Last month",
+          "3M": "Last 3 months",
+          "6M": "Last 6 months",
+          "1y": "Last year"
+        },
+        colorsLabel: "Color",
+        useThemeColor: "Use current theme color",
+        ratiosLabel: "Aspect ratio",
+        atleastPlaceholder: "Minimum resolution (e.g. 1920x1080)",
+        loading: "Searching Wallhaven...",
+        noResults: "No wallpapers found for these filters.",
+        downloadOnly: "Download",
+        downloading: "Downloading...",
+        downloaded: "Downloaded",
+        downloadFailed: "Failed to download wallpaper: {{error}}",
+        history: "History",
+        historyEmpty: "You haven't downloaded any wallpapers yet.",
+        clearHistory: "Clear history",
+        removeFromHistory: "Remove from history",
+        viewDetails: "View details",
+        loadingDetails: "Loading details...",
+        showSimilar: "Similar wallpapers",
+        filters: "Filters",
+        showFilters: "Show filters",
+        hideFilters: "Hide filters",
+        saveDefaultFilters: "Save as default",
+        saveDefaultFiltersHint: "Use these filters every time you open Wallhaven",
+        defaultFiltersSaved: "Saved",
+        clearDefaultFilters: "Clear default"
       }
     }
   },
@@ -191,7 +301,9 @@ const resources = {
         templates: "Apps",
         desktop: "Automação",
         apply: "Aplicar Tudo",
-        settings: "Configurações"
+        settings: "Configurações",
+        collapse: "Recolher barra lateral",
+        expand: "Expandir barra lateral"
       },
       settings: {
         title: "Configurações",
@@ -199,7 +311,15 @@ const resources = {
         language: "Idioma",
         languageDescription: "Escolha o idioma do aplicativo.",
         wallpapersPerPage: "Wallpapers por página",
-        wallpapersPerPageDescription: "Controla quantos wallpapers são carregados por vez nas fontes. Valores menores reduzem uso de memória e melhoram desempenho em pastas grandes."
+        wallpapersPerPageDescription: "Controla quantos wallpapers são carregados por vez nas fontes. Valores menores reduzem uso de memória e melhoram desempenho em pastas grandes.",
+        wallhavenTitle: "Wallhaven",
+        wallhavenDescription: "Chave de API opcional para desbloquear conteúdo NSFW e os limites de requisição da sua conta.",
+        wallhavenGetKey: "Obter uma chave",
+        wallhavenKeyPlaceholder: "Chave de API do Wallhaven",
+        wallhavenValidate: "Validar",
+        wallhavenValidating: "Validando...",
+        wallhavenKeyValid: "Chave válida",
+        wallhavenKeyInvalid: "Chave inválida"
       },
       colors: {
         title: "Aparência",
@@ -270,7 +390,9 @@ const resources = {
         nextPage: "Próxima página",
         next: "Próxima",
         thumbnailLoading: "Carregando miniatura...",
-        thumbnailUnavailable: "Miniatura indisponível"
+        thumbnailUnavailable: "Miniatura indisponível",
+        tabLocal: "Local",
+        tabWallhaven: "Wallhaven"
       },
       presets: {
         title: "Predefinições de Tema",
@@ -326,7 +448,46 @@ const resources = {
         preview: "Pré-visualizar",
         remove: "Remover",
         guide: "Guia",
-        removeConfirm: "Tem certeza de que deseja remover {{name}} dos seus modelos ativos?"
+        removeConfirm: "Tem certeza de que deseja remover {{name}} dos seus modelos ativos?",
+        automation: {
+          auto: "Automático",
+          config: "Configuração única",
+          manual: "Passos manuais"
+        },
+        steps: {
+          aercStyleset: "Abra o arquivo ~/.config/aerc/aerc.conf e, na seção [ui], adicione a linha styleset-name=matugen. Reinicie o Aerc para ver as novas cores.",
+          alacrittyImport: "Abra o arquivo alacritty.toml e adicione a linha import = [\"colors.toml\"] no início dele. O Alacritty carrega as novas cores na próxima vez que for aberto.",
+          btopChooseTheme: "Abra o btop, pressione Esc para entrar nas Opções e, em Theme, escolha \"matugen\" na lista. Você só precisa fazer isso uma vez — as próximas atualizações de cor são aplicadas automaticamente.",
+          cavaSetTheme: "Abra o arquivo ~/.config/cava/config e defina theme = 'matugen'. Reinicie o Cava (pressione q e abra de novo) para aplicar as novas cores.",
+          ghosttySetTheme: "Abra o arquivo ~/.config/ghostty/config e adicione a linha theme = \"Matugen\". O Ghostty recarrega o tema sozinho sempre que as cores forem geradas de novo.",
+          helixSetTheme: "Abra o arquivo ~/.config/helix/config.toml e adicione a linha theme = \"matugen\". Reinicie o Helix (ou recarregue a configuração) para ver as novas cores.",
+          kittyApplyTheme: "Abra um terminal, rode o comando kitten themes e selecione \"Matugen\" na lista. Você só precisa fazer isso uma vez — o Kitty mantém o tema sincronizado depois disso.",
+          discordActivate: "Abra o Discord (ou Vesktop), vá em Configurações > Vencord > Temas e ative o arquivo de tema gerado na lista.",
+          spicetifyConfig: "Abra o arquivo ~/.config/spicetify/config-xpui.ini e defina color_scheme = matugen e current_theme = Sleek.",
+          spicetifyDownloadSleek: "Baixe o tema Sleek uma vez rodando: curl -L --create-dirs -o ~/.config/spicetify/Themes/Sleek/user.css https://raw.githubusercontent.com/spicetify/spicetify-themes/master/Sleek/user.css",
+          steamInstallAdwSteamGtk: "Instale o pacote adwsteamgtk para a sua distribuição Linux (procure por \"adwsteamgtk\" no gerenciador de pacotes).",
+          steamEnableCustomCss: "Abra o AdwSteamGtk, vá em Preferências e ative a opção \"Custom CSS\".",
+          telegramManualIntro: "O Telegram não aplica temas sozinho — você precisa instalar este uma vez, manualmente.",
+          telegramApply: "Abra o Telegram, arraste o arquivo de tema gerado para qualquer conversa, envie-o, depois abra o arquivo enviado e toque em \"Aplicar\".",
+          vivaldiEnableExperiment: "No Vivaldi, abra vivaldi://experiments e ative a opção \"Allow for using CSS modifications\".",
+          vivaldiSelectFolder: "Vá em Configurações > Aparência > Modificações de Interface Personalizadas e selecione a pasta onde o arquivo CSS gerado foi salvo.",
+          zellijAddTheme: "Abra o arquivo ~/.config/zellij/config.kdl e adicione a linha theme \"matugen\". Reinicie as sessões abertas do Zellij para ver as novas cores.",
+          kvantumSetTheme: "Abra o arquivo ~/.config/Kvantum/kvantum.kvconfig e, na seção [General], defina theme=matugen. Você só precisa fazer isso uma vez.",
+          qtctPlatformTheme: "Defina a variável de ambiente QT_QPA_PLATFORMTHEME como qt6ct (adicione ao seu perfil do shell ou às configurações de sessão) para que os aplicativos Qt usem esse esquema de cores.",
+          qtctInstallStyle: "Instale um estilo Qt compatível com paletas personalizadas, como Breeze ou Darkly, caso ainda não tenha um instalado.",
+          gtkImportColors: "Adicione a linha @import 'colors.css'; no início dos arquivos ~/.config/gtk-3.0/gtk.css e ~/.config/gtk-4.0/gtk.css.",
+          zenEnableStylesheets: "No Zen Browser, abra about:config e defina toolkit.legacyUserProfileCustomizations.stylesheets como true.",
+          zenImportChrome: "Crie uma pasta chrome dentro do seu perfil do Zen e importe os dois arquivos gerados (userChrome.css e userContent.css) usando caminhos absolutos.",
+          vscodeInstallExtension: "Instale a extensão \"Matugen Theme\" na VS Code Marketplace (ou na Open VSX, se você usa o VSCodium) e depois selecione-a na lista de temas de cores.",
+          rmpcSetTheme: "Abra o arquivo ~/.config/rmpc/config.ron e defina theme: Some(\"matugen\"). Reinicie o rmpc para ver as novas cores.",
+          papirusInstall: "Instale a ferramenta papirus-folders e permita que ela rode sem pedir senha — isso é necessário porque ela precisa de sudo para recolorir os ícones do sistema.",
+          papirusPostHook: "Nas configurações avançadas do modelo, adicione um comando que rode o papirus-folders depois de gerar as cores, para que as pastas de ícones sejam atualizadas automaticamente.",
+          websiteEnableStylesheets: "No seu navegador baseado em Firefox, abra about:config e defina toolkit.legacyUserProfileCustomizations.stylesheets como true.",
+          websiteCopyCss: "Crie uma pasta chrome dentro do seu perfil do navegador e copie o arquivo CSS deste site para dentro dela.",
+          websiteImport: "Importe o colors.css gerado e o CSS deste site a partir do userContent.css do seu perfil, usando caminhos absolutos.",
+          neovimBase16: "Se quiser a integração completa via plugin, instale e configure o base16-colorscheme.nvim — veja o README incluso para mais detalhes.",
+          neovimReloadHook: "Carregue o arquivo gerado a partir do seu init.lua e configure um autocmd de SIGUSR1 para que o Neovim recarregue as cores automaticamente."
+        }
       },
       desktop: {
         title: "Automação",
@@ -358,6 +519,65 @@ const resources = {
         dark: "Escuro",
         applyGtkTheme: "Aplicar Tema GTK",
         gtkApplied: "{{name}} aplicado."
+      },
+      wallhaven: {
+        searchPlaceholder: "Pesquisar no Wallhaven (tags, +tag -tag, @usuário, id:123)...",
+        category: {
+          general: "Geral",
+          anime: "Anime",
+          people: "Pessoas"
+        },
+        sketchy: "Sketchy",
+        sketchyHint: "Inclui conteúdo limítrofe.",
+        nsfw: "NSFW",
+        nsfwHint: "Alterna conteúdo NSFW, liberado pela sua conta Wallhaven.",
+        nsfwNeedsKey: "Adicione uma chave de API do Wallhaven válida em Configurações para desbloquear o NSFW.",
+        nsfwDisclaimerTitle: "Antes de habilitar o NSFW",
+        nsfwDisclaimerBody: "Isso libera wallpapers marcados como NSFW no Wallhaven, controlado inteiramente pela sua própria conta e chave de API do Wallhaven. O Matugen Studio não hospeda, modera ou filtra esse conteúdo — as configurações de purity da sua conta Wallhaven continuam valendo. Só habilite se você entender o que está navegando.",
+        nsfwDisclaimerConfirm: "Entendi, habilitar",
+        sorting: {
+          date_added: "Mais recentes",
+          relevance: "Relevância",
+          random: "Aleatório",
+          views: "Mais vistos",
+          favorites: "Mais favoritados",
+          toplist: "Mais populares"
+        },
+        orderDesc: "Decrescente",
+        orderAsc: "Crescente",
+        topRange: {
+          "1d": "Último dia",
+          "3d": "Últimos 3 dias",
+          "1w": "Última semana",
+          "1M": "Último mês",
+          "3M": "Últimos 3 meses",
+          "6M": "Últimos 6 meses",
+          "1y": "Último ano"
+        },
+        colorsLabel: "Cor",
+        useThemeColor: "Usar cor do tema atual",
+        ratiosLabel: "Proporção",
+        atleastPlaceholder: "Resolução mínima (ex: 1920x1080)",
+        loading: "Pesquisando no Wallhaven...",
+        noResults: "Nenhum wallpaper encontrado com esses filtros.",
+        downloadOnly: "Baixar",
+        downloading: "Baixando...",
+        downloaded: "Baixado",
+        downloadFailed: "Falha ao baixar wallpaper: {{error}}",
+        history: "Histórico",
+        historyEmpty: "Você ainda não baixou nenhum wallpaper.",
+        clearHistory: "Limpar histórico",
+        removeFromHistory: "Remover do histórico",
+        viewDetails: "Ver detalhes",
+        loadingDetails: "Carregando detalhes...",
+        showSimilar: "Wallpapers parecidos",
+        filters: "Filtros",
+        showFilters: "Mostrar filtros",
+        hideFilters: "Ocultar filtros",
+        saveDefaultFilters: "Salvar como padrão",
+        saveDefaultFiltersHint: "Usa esses filtros toda vez que você abrir o Wallhaven",
+        defaultFiltersSaved: "Salvo",
+        clearDefaultFilters: "Limpar padrão"
       }
     }
   }
