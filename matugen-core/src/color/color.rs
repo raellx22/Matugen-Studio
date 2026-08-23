@@ -246,6 +246,12 @@ pub fn get_source_color_from_image(
         debug!("{}: {}", i, color);
     }
 
+    if ranked.is_empty() {
+        return Err(Report::msg(
+            "No usable colors found in image".to_string(),
+        ));
+    }
+
     if let Some(index) = source_color_index {
         // Should be safe because of the range in the argument definition but just in case...
         if *index < 0 || (*index as usize) >= ranked.len() {
@@ -342,11 +348,11 @@ pub fn get_source_color_from_web_image(url: &str, filter_type: FilterType) -> Re
 
 pub fn get_source_color_from_color(color: &ColorFormat) -> Result<Argb, Report> {
     match color {
-        ColorFormat::Hex { string } => {
-            Ok(Argb::from_str(string).expect("Invalid hex color string provided"))
-        }
+        ColorFormat::Hex { string } => Argb::from_str(string)
+            .map_err(|error| Report::msg(format!("Invalid hex color '{}': {}", string, error))),
         ColorFormat::Rgb { string } => {
-            let rgb = Rgb::from_str(string).expect("Invalid rgb color string provided");
+            let rgb = Rgb::from_str(string)
+                .map_err(|error| Report::msg(format!("Invalid RGB color '{}': {}", string, error)))?;
             Ok(Argb {
                 red: rgb.red() as u8,
                 green: rgb.green() as u8,
@@ -356,7 +362,7 @@ pub fn get_source_color_from_color(color: &ColorFormat) -> Result<Argb, Report> 
         }
         ColorFormat::Hsl { string } => {
             let rgb: Rgb = Hsl::from_str(string)
-                .expect("Invalid hsl color string provided")
+                .map_err(|error| Report::msg(format!("Invalid HSL color '{}': {}", string, error)))?
                 .into();
             Ok(Argb {
                 red: rgb.red() as u8,

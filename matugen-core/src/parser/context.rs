@@ -87,12 +87,13 @@ impl Context {
         merge_nested(&mut self.data, incoming);
     }
 
-    pub fn merge_value(&mut self, incoming: Value) {
+    pub fn merge_value(&mut self, incoming: Value) -> Result<(), String> {
         match incoming {
             Value::Map(map) => {
                 merge_nested(&mut self.data, &map);
+                Ok(())
             }
-            _ => panic!(""),
+            _ => Err("Expected a map to merge into template context".to_string()),
         }
     }
 
@@ -103,11 +104,12 @@ impl Context {
         }
     }
 
-    pub fn merge_json(&mut self, json: serde_json::Value) {
+    pub fn merge_json(&mut self, json: serde_json::Value) -> Result<(), String> {
         if let Some(map) = self.json_to_value_map(json) {
             self.merge(&map);
+            Ok(())
         } else {
-            panic!("Expected a JSON object to merge into context.");
+            Err("Expected a JSON object to merge into template context".to_string())
         }
     }
 

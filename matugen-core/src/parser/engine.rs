@@ -1,7 +1,6 @@
 use std::{cell::RefCell, collections::HashMap};
 
-use ariadne::{Color, Label, Report, ReportKind, Source};
-use chumsky::{error::Rich, prelude::*, span::SimpleSpan};
+use chumsky::{prelude::*, span::SimpleSpan};
 
 use crate::parser::{
     context::RuntimeContext, filtertype::FilterFn, Error, ErrorCollector, SpannedValue,
@@ -189,34 +188,39 @@ impl Engine {
         self.filters.remove(name)
     }
 
-    pub fn add_template(&mut self, name: String, source: String) {
+    pub fn add_template(&mut self, name: String, source: String) -> Result<(), String> {
         self.sources.push(source);
         let source_id = self.sources.len() - 1;
         let source_ref = &self.sources[source_id];
 
         let parser = Self::parser(&self.syntax);
-
         let (ast, errs) = parser.parse(source_ref).into_output_errors();
+        let ast = ast.ok_or_else(|| {
+            let details = errs
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("Failed to parse template '{}': {}", name, details)
+        })?;
 
         self.templates.insert(
             name.clone(),
             Template {
                 name,
                 source_id,
-                ast: ast.unwrap_or_else(|| {
-                    self.show_errors(errs, source_ref);
-                    std::process::exit(1);
-                }),
+                ast,
             },
         );
+        Ok(())
     }
 
     pub fn remove_template(&mut self, name: &String) -> bool {
         self.templates.remove(name).is_some()
     }
 
-    pub fn add_context(&mut self, context: serde_json::Value) {
-        self.context.merge_json(context);
+    pub fn add_context(&mut self, context: serde_json::Value) -> Result<(), String> {
+        self.context.merge_json(context)
     }
 
     pub fn remove_key_from_context(&mut self, key: &str) {
@@ -239,11 +243,18 @@ impl Engine {
             )))
     }
 
-    pub fn compile(&mut self, source: String) -> Result<String, Vec<Error>> {
-        self.add_template(String::from("temporary"), source.clone());
-        let res = self.render("temporary");
-        self.remove_template(&String::from("temporary"));
-        res
+    pub fn compile(&mut self, source: String) -> Result<String, String> {
+        let name = String::from("temporary");
+        self.add_template(name.clone(), source)?;
+        let result = self.render(&name).map_err(|errors| {
+            errors
+                .into_iter()
+                .map(|error| error.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        self.remove_template(&name);
+        result
     }
 
     pub fn render(&self, name: &str) -> Result<String, Vec<Error>> {
@@ -264,20 +275,16 @@ impl Engine {
             }
         }
     }
+}
 
-    fn show_errors(&self, errs: Vec<Rich<'_, char>>, source: &str) {
-        errs.into_iter().for_each(|e| {
-            Report::build(ReportKind::Error, ((), e.span().into_range()))
-                .with_config(ariadne::Config::default().with_index_type(ariadne::IndexType::Byte))
-                .with_message(e.to_string())
-                .with_label(
-                    Label::new(((), e.span().into_range()))
-                        .with_message(e.reason().to_string())
-                        .with_color(Color::Red),
-                )
-                .finish()
-                .print(Source::from(source))
-                .unwrap();
-        });
+#[cfg(test)]
+mod tests {
+    use super::Engine;
+
+    #[test]
+    fn invalid_template_returns_an_error_without_exiting() {
+        let mut engine = Engine::new();
+        let result = engine.add_template("invalid".to_string(), "{{".to_string());
+        assert!(result.is_err());
     }
 }

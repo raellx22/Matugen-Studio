@@ -46,3 +46,46 @@ PRs should include:
 - linked issue (if available);
 - screenshots/GIFs for UI changes;
 - test/build commands executed and results.
+
+<!-- prowl-agent -->
+## Prowl project context
+
+This repo has a Prowl index of its files, symbols, and how they connect. For any
+semantic or structural question -- where code is, what it does, who calls it, or
+what a change touches -- **run the read-only prowl-agent CLI first**; do not grep
+or read whole files just to locate things. Prowl reindexes what changed before
+each query, so answers stay current and are cited to file:line, returned in one
+call instead of a grep hit list you then open files to disambiguate.
+
+| Question | First command |
+|---|---|
+| Map the repository | `prowl-agent overview` |
+| Locate a feature or concept | `prowl-agent search "<question>"` |
+| Locate a named symbol | `prowl-agent find <name>` |
+| Read one symbol's source | `prowl-agent def <name-or-id>` |
+| Inspect a file's structure | `prowl-agent outline <path>` |
+| Trace who uses a symbol | `prowl-agent references <name-or-id>` |
+| Size a change's blast radius | `prowl-agent impact <path>` |
+| Inspect uncommitted work | `prowl-agent wip` / `prowl-agent changed` |
+| Read a located line range | `prowl-agent peek <file:start-end>` |
+
+Keep grep for exact literal or regex text and glob for filename patterns. CLI
+output is token-lean TOON by default; add --format human|toon|json|markdown. If
+your harness also wires Prowl as an MCP server, the same index is reachable
+there; the CLI needs no server and is the first choice.
+<!-- /prowl-agent -->
+
+<!-- prowl-agent:map -->
+## Prowl project map
+
+Auto-generated from the Prowl index, refreshed on each `overview`/`init`. Prefer retrieving from Prowl (and reading the cited files) over grepping or relying on training memory; this is the current shape of the repo.
+
+- size: 148 files, 4803 symbols, 1963 edges (resolved 451, external deps 242, unresolved 1270)
+- languages: rust:50 css:24 json:16 toml:13 markdown:10 tsx:7 generic:6 typescript:6
+- subsystems: matugen-core/src(39,rust) · src/pages(11,tsx) · src-tauri/src(9,rust) · src-tauri/resources(4,css) · misc(2,json)
+- entrypoints: src/main.tsx · src-tauri/src/lib.rs
+- central files (most depended-on): matugen-core/src/lib.rs · matugen-core/src/parser/mod.rs · matugen-core/src/parser/context.rs · matugen-core/src/parser/engine.rs · matugen-core/src/parser/errors.rs
+- read these guides first: README.md · AGENTS.md
+
+Depth on demand: `prowl-agent find|def|outline|references <name>`, `search <text>`, `context search "<question>"`, `sketch <ui>`.
+<!-- /prowl-agent:map -->

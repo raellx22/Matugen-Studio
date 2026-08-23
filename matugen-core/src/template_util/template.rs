@@ -6,8 +6,8 @@ use material_colors::color::Argb;
 
 use crate::{
     color::format::{
-        format_hex, format_hex_alpha, format_hex_alpha_stripped, format_hex_stripped, format_hsl,
-        format_hsla, format_rgb, format_rgba, rgb_from_argb,
+        alpha_u8, format_hex, format_hex_alpha, format_hex_alpha_stripped, format_hex_stripped,
+        format_hsl, format_hsla, format_rgb, format_rgba, rgb_from_argb,
     },
     scheme::{Schemes, SchemesEnum},
 };
@@ -111,7 +111,7 @@ fn generate_color_strings(color: Argb) -> Color {
         red: format!("{:?}", base_color.red() as u8),
         green: format!("{:?}", base_color.green() as u8),
         blue: format!("{:?}", base_color.blue() as u8),
-        alpha: format!("{:?}", base_color.alpha() as u8),
+        alpha: format!("{:?}", alpha_u8(base_color.alpha())),
         hue: format!("{:?}", &hsl_color.hue()),
         lightness: format!("{:?}", &hsl_color.lightness()),
         saturation: format!("{:?}", &hsl_color.saturation()),

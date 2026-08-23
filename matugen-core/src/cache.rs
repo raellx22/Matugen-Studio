@@ -136,10 +136,15 @@ pub struct ImageCache {
     pub hash: Option<String>,
     source: Option<PathBuf>,
     cache_folder: PathBuf,
+    variant_hash: String,
 }
 
 impl ImageCache {
-    pub fn new(source: &Source) -> Self {
+    pub fn new(
+        source: &Source,
+        scheme_type: &Option<crate::scheme::SchemeTypes>,
+        contrast: Option<f64>,
+    ) -> Self {
         let pathbuf = match source {
             Source::Image { path } => Some(PathBuf::from(path)),
             _ => None,
@@ -148,11 +153,15 @@ impl ImageCache {
         let cache_folder = get_proj_path(&ProjectDirsTypes::Cache)
             .unwrap()
             .join("images");
+        let mut variant_hasher = Sha256::new();
+        variant_hasher.update(format!("{:?}", scheme_type).as_bytes());
+        variant_hasher.update(contrast.unwrap_or_default().to_bits().to_le_bytes());
 
         Self {
             hash: get_cache(source),
             source: pathbuf,
             cache_folder,
+            variant_hash: format!("{:x}", variant_hasher.finalize()),
         }
     }
 
@@ -209,14 +218,15 @@ impl ImageCache {
 
     fn get_name(&self) -> PathBuf {
         let name = format!(
-            "{}.{}.json",
+            "{}.{}.{}.json",
             self.source
                 .as_ref()
                 .unwrap()
                 .file_name()
                 .unwrap()
                 .to_string_lossy(),
-            self.hash.as_ref().unwrap()
+            self.hash.as_ref().unwrap(),
+            self.variant_hash
         );
 
         let mut file = PathBuf::new();

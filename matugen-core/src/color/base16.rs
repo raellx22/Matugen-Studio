@@ -52,6 +52,12 @@ pub fn generate_base16_scheme_from_palette(
     palette: &[Rgb],
     dark: bool,
 ) -> Result<IndexMap<String, Argb>, Report> {
+    if palette.is_empty() {
+        return Err(Report::msg(
+            "Cannot generate base16 scheme from an empty palette".to_string(),
+        ));
+    }
+
     let mut scheme = IndexMap::new();
 
     let mut sorted = palette.to_vec();
@@ -65,7 +71,9 @@ pub fn generate_base16_scheme_from_palette(
 
     let gray_ramp = interpolate_grays(base00, base05, dark);
     for (i, &name) in GRAY_NAMES.iter().enumerate() {
-        scheme.insert(name.to_string(), gray_ramp[i]);
+        if name != "base00" && name != "base05" {
+            scheme.insert(name.to_string(), gray_ramp[i]);
+        }
     }
 
     let mut accents: Vec<&Rgb> = sorted.iter().collect();

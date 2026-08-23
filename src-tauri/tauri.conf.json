@@ -26,7 +26,7 @@
         "scope": {
           "allow": [
             "$CACHE/thumbnails/**",
-            "$CACHE/matugen-gui/**"
+            "$CACHE/matugen-studio/**"
           ],
           "requireLiteralLeadingDot": false
         }

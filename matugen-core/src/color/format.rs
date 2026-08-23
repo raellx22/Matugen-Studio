@@ -20,7 +20,7 @@ pub fn rgb_from_argb(color: Argb) -> Rgb {
         color.red as f64,
         color.green as f64,
         color.blue as f64,
-        color.alpha as f64,
+        color.alpha as f64 / 255.0,
     ])
 }
 
@@ -86,7 +86,7 @@ pub fn format_alpha_hex_stripped(color: &Rgb) -> String {
 
 // alpha can be 0..1 (CSS parsing / set_alpha) or 0..255 (ARGB conversions).
 // Normalize to 0..255 so hex output is consistent.
-fn alpha_u8(alpha: f64) -> u8 {
+pub(crate) fn alpha_u8(alpha: f64) -> u8 {
     if alpha <= 1.0 {
         (alpha.clamp(0.0, 1.0) * 255.0).round() as u8
     } else {
@@ -134,4 +134,23 @@ pub fn format_hsla(color: &Hsl) -> String {
         color.lightness(),
         alpha
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use material_colors::color::Argb;
+
+    use super::{argb_from_rgb, rgb_from_argb};
+
+    #[test]
+    fn argb_alpha_round_trips_through_colorsys_ratio() {
+        let original = Argb {
+            alpha: 128,
+            red: 12,
+            green: 34,
+            blue: 56,
+        };
+
+        assert_eq!(argb_from_rgb(&rgb_from_argb(original)).alpha, original.alpha);
+    }
 }

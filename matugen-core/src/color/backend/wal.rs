@@ -56,8 +56,7 @@ fn resize_image(image: &RgbImage, target_width: u32) -> RgbImage {
     }
 
     let scale = target_width as f32 / w as f32;
-    let target_height = (h as f32 * scale).round() as u32;
-
+    let target_height = (h as f32 * scale).round().max(1.0) as u32;
     image::imageops::resize(image, target_width, target_height, FilterType::Triangle)
 }
 
@@ -75,42 +74,55 @@ fn sample_pixels(image: &RgbImage, step: u32) -> Vec<[f32; 3]> {
 }
 
 fn kmeans(samples: &[[f32; 3]], k: usize, iterations: usize) -> Vec<[f32; 3]> {
-    let mut centroids: Vec<[f32; 3]> = samples.iter().take(k).cloned().collect();
+    let cluster_count = k.min(samples.len());
+    if cluster_count == 0 {
+        return Vec::new();
+    }
+
+    let mut centroids = if cluster_count == 1 {
+        vec![samples[0]]
+    } else {
+        (0..cluster_count)
+            .map(|index| {
+                let sample_index = index * (samples.len() - 1) / (cluster_count - 1);
+                samples[sample_index]
+            })
+            .collect::<Vec<_>>()
+    };
 
     for _ in 0..iterations {
-        let mut buckets: Vec<Vec<[f32; 3]>> = vec![Vec::new(); k];
+        let mut buckets: Vec<Vec<[f32; 3]>> = vec![Vec::new(); cluster_count];
 
         for sample in samples {
-            let mut best = 0;
-            let mut best_dist = f32::MAX;
-
-            for (i, centroid) in centroids.iter().enumerate() {
-                let d = (sample[0] - centroid[0]).powi(2)
-                    + (sample[1] - centroid[1]).powi(2)
-                    + (sample[2] - centroid[2]).powi(2);
-
-                if d < best_dist {
-                    best = i;
-                    best_dist = d;
-                }
-            }
-
+            let (best, _) = centroids
+                .iter()
+                .enumerate()
+                .map(|(index, centroid)| (index, color_distance(*sample, *centroid)))
+                .min_by(|(_, left), (_, right)| left.total_cmp(right))
+                .expect("cluster_count is non-zero");
             buckets[best].push(*sample);
         }
 
-        for (i, bucket) in buckets.iter().enumerate() {
+        for (index, bucket) in buckets.iter().enumerate() {
             if bucket.is_empty() {
+                centroids[index] = samples
+                    .iter()
+                    .copied()
+                    .max_by(|left, right| {
+                        nearest_centroid_distance(*left, &centroids)
+                            .total_cmp(&nearest_centroid_distance(*right, &centroids))
+                    })
+                    .expect("samples is non-empty");
                 continue;
             }
 
             let mut sum = [0.0; 3];
-            for p in bucket {
-                sum[0] += p[0];
-                sum[1] += p[1];
-                sum[2] += p[2];
+            for pixel in bucket {
+                sum[0] += pixel[0];
+                sum[1] += pixel[1];
+                sum[2] += pixel[2];
             }
-
-            centroids[i] = [
+            centroids[index] = [
                 sum[0] / bucket.len() as f32,
                 sum[1] / bucket.len() as f32,
                 sum[2] / bucket.len() as f32,
@@ -119,6 +131,19 @@ fn kmeans(samples: &[[f32; 3]], k: usize, iterations: usize) -> Vec<[f32; 3]> {
     }
 
     centroids
+}
+
+fn color_distance(left: [f32; 3], right: [f32; 3]) -> f32 {
+    (left[0] - right[0]).powi(2)
+        + (left[1] - right[1]).powi(2)
+        + (left[2] - right[2]).powi(2)
+}
+
+fn nearest_centroid_distance(sample: [f32; 3], centroids: &[[f32; 3]]) -> f32 {
+    centroids
+        .iter()
+        .map(|centroid| color_distance(sample, *centroid))
+        .fold(f32::MAX, f32::min)
 }
 
 fn score_colorsys(c: &Rgb) -> f32 {

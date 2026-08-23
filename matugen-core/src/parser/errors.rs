@@ -150,6 +150,12 @@ pub enum FilterError {
     },
     #[error("You should not use the set_alpha filter with a format that doesn't have an alpha channel. Consider using one of these formats instead: [{replacement}]")]
     SetAlphaOnNonAlphaFormat { replacement: &'static str },
+    #[error("'{value}' is not a valid CSS color")]
+    InvalidColorString { value: String },
+    #[error("String filters on colors require a valid color format suffix")]
+    MissingColorFormat,
+    #[error("'{format}' is not a valid color format")]
+    InvalidColorFormat { format: String },
 }
 
 impl Error {
@@ -212,6 +218,9 @@ impl FilterError {
             FilterError::UnexpectedStringValue { .. } => "UnexpectedStringValue",
             FilterError::InvalidFormatString { .. } => "InvalidFormatString",
             FilterError::SetAlphaOnNonAlphaFormat { .. } => "SetAlphaOnNonAlphaFormat",
+            FilterError::InvalidColorString { .. } => "InvalidColorString",
+            FilterError::MissingColorFormat => "MissingColorFormat",
+            FilterError::InvalidColorFormat { .. } => "InvalidColorFormat",
         }
     }
 }

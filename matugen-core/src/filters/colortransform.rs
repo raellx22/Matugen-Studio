@@ -1,4 +1,3 @@
-use color_eyre::eyre::Context;
 use colorsys::{ColorTransform, Hsl, Rgb, SaturationInSpace};
 use material_colors::blend::{harmonize as md3_harmonize, hct_hue};
 
@@ -159,14 +158,9 @@ pub(crate) fn to_color(
     _engine: &Engine,
 ) -> Result<FilterReturnType, FilterError> {
     match original {
-        FilterReturnType::String(s) => Ok(FilterReturnType::Rgb(
-            parse_css_color(&s)
-                .wrap_err(format!(
-                    "Failed to use to_color filter on color string: {}",
-                    s
-                ))
-                .unwrap(),
-        )),
+        FilterReturnType::String(s) => parse_css_color(&s)
+            .map(FilterReturnType::Rgb)
+            .map_err(|_| FilterError::InvalidColorString { value: s }),
         FilterReturnType::Rgb(color) => Ok(FilterReturnType::Rgb(color)),
         FilterReturnType::Hsl(color) => Ok(FilterReturnType::Hsl(color)),
         // TODO: Add proper error here

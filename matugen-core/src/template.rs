@@ -129,7 +129,9 @@ impl TemplateFile<'_> {
                 .wrap_err(format!("Could not read the {} template.", name))
                 .suggestion("Try converting the file to use UTF-8 encoding.")?;
 
-            self.engine.add_template(name.to_string(), data);
+            self.engine
+                .add_template(name.to_string(), data)
+                .map_err(Report::msg)?;
 
             for output_path in output_paths_absolute {
                 paths_hashmap.insert(
@@ -303,13 +305,33 @@ impl TemplateFile<'_> {
             }
         }
 
-        let mut output_file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(out)?;
-
-        output_file.write_all(data.as_bytes())?;
+        let parent = out
+            .parent()
+            .ok_or_else(|| Report::msg(format!("Output path has no parent: {}", out.display())))?;
+        let temp_name = format!(
+            ".{}.matugen.tmp.{}",
+            out.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("output"),
+            std::process::id()
+        );
+        let temp_path = parent.join(temp_name);
+        let write_result = (|| -> Result<(), Report> {
+            let mut output_file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&temp_path)?;
+            output_file.write_all(data.as_bytes())?;
+            output_file.flush()?;
+            output_file.sync_all()?;
+            std::fs::rename(&temp_path, &out)?;
+            Ok(())
+        })();
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&temp_path);
+        }
+        write_result?;
 
         success!(
             "Exported the <b><green>{}</> template to <d><u>{}</>",
@@ -340,7 +362,7 @@ fn change_scheme_type(
         default_scheme,
     )?;
 
-    engine.add_context(json);
+    engine.add_context(json).map_err(Report::msg)?;
 
     Ok(())
 }
@@ -352,32 +374,20 @@ pub fn format_hook(
     compare_to: &Option<String>,
 ) -> Result<(), Report> {
     if let (Some(compare), Some(to)) = (colors_to_compare, compare_to) {
-        let res = match engine.compile(to.to_string()) {
-            Ok(v) => v,
-            Err(errors) => {
-                eprintln!("Error when formatting hook:\n{}", &hook);
-                for err in errors {
-                    err.emit(&engine)?;
-                }
-                std::process::exit(1);
-            }
-        };
+        let res = engine.compile(to.to_string()).map_err(|error| {
+            Report::msg(format!("Error when formatting hook '{}': {}", hook, error))
+        })?;
         let closest_color = get_closest_color(compare, &res)?;
-        engine.add_context(json!({
-            "closest_color": closest_color
-        }));
+        engine
+            .add_context(json!({
+                "closest_color": closest_color
+            }))
+            .map_err(Report::msg)?;
     }
 
-    let res = match engine.compile((&hook).to_string()) {
-        Ok(v) => v,
-        Err(errors) => {
-            eprintln!("Error when formatting hook:\n{}", &hook);
-            for err in errors {
-                err.emit(&engine)?;
-            }
-            std::process::exit(1);
-        }
-    };
+    let res = engine.compile(hook.to_string()).map_err(|error| {
+        Report::msg(format!("Error when formatting hook '{}': {}", hook, error))
+    })?;
 
     let mut command = shell(&res);
 

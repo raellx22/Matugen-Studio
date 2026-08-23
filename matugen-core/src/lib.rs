@@ -71,7 +71,7 @@ impl State {
         let (config_file, config_path) =
             ConfigFile::read(&args).wrap_err("Failed to read config file.")?;
 
-        let image_cache = ImageCache::new(&args.source);
+        let image_cache = ImageCache::new(&args.source, &args.r#type, args.contrast);
 
         let mut loaded_cache = false;
 
@@ -189,7 +189,7 @@ impl State {
                 .expect("Failed saving cache");
         }
 
-        engine.add_context(json.clone());
+        engine.add_context(json.clone()).map_err(Report::msg)?;
 
         Ok((engine, json))
     }
