@@ -1,15 +1,17 @@
-use execute::{shell, Execute};
+use execute::Execute;
 use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 use tauri::Manager;
 
 const THUMBNAIL_SIZE: u32 = 256;
-const THUMBNAIL_DIRS: [&str; 4] = ["large", "x-large", "xx-large", "normal"];
+const THUMBNAIL_DIRS: [&str; 3] = ["large", "x-large", "xx-large"];
+static THUMBNAIL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
     .add(b'"')
@@ -35,7 +37,6 @@ pub async fn list_wallpapers(
     app: tauri::AppHandle,
     folder_path: String,
 ) -> Result<Vec<String>, String> {
-    allow_asset_directory(&app, Path::new(&folder_path), true);
     allow_thumbnail_cache(&app);
 
     tauri::async_runtime::spawn_blocking(move || list_wallpapers_blocking(folder_path))
@@ -82,8 +83,8 @@ pub fn get_monitor_count(window: tauri::Window) -> usize {
 pub fn apply_wallpaper(image_path: String, screen_index: i32) -> Result<(), String> {
     if screen_index == -1 {
         // Global application using the official command
-        let cmd_str = format!("plasma-apply-wallpaperimage \"{}\"", image_path);
-        let mut cmd = shell(&cmd_str);
+        let mut cmd = std::process::Command::new("plasma-apply-wallpaperimage");
+        cmd.arg(&image_path);
 
         match cmd.execute_output() {
             Ok(output) => {
@@ -99,7 +100,7 @@ pub fn apply_wallpaper(image_path: String, screen_index: i32) -> Result<(), Stri
         // Per-monitor application via DBus
         let safe_path = image_path.replace("'", "\\'");
         let script = format!(
-            "var allDesktops = desktops(); var target = allDesktops[{}]; if (target) {{ target.wallpaperPlugin = 'org.kde.image'; target.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General']; target.writeConfig('Image', 'file://{}'); }}",
+            "var allDesktops = desktops(); var target = allDesktops.find(function(d) {{ return d.screen === {0}; }}) || allDesktops[{0}]; if (target) {{ target.wallpaperPlugin = 'org.kde.image'; target.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General']; target.writeConfig('Image', 'file://{1}'); }}",
             screen_index, safe_path
         );
         let mut cmd = std::process::Command::new("qdbus6");
@@ -298,7 +299,8 @@ fn write_freedesktop_thumbnail(
     modified: u64,
     size: u64,
 ) -> Result<(), String> {
-    let tmp_path = thumb_path.with_extension("png.tmp");
+    let suffix = THUMBNAIL_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = thumb_path.with_extension(format!("png.tmp.{}.{}", std::process::id(), suffix));
     let file = File::create(&tmp_path).map_err(|e| e.to_string())?;
     let writer = BufWriter::new(file);
     let mut encoder = png::Encoder::new(writer, thumb.width(), thumb.height());

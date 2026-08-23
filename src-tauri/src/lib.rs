@@ -72,6 +72,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppExitState::default())
         .manage(commands::kde::KdeWallpaperWatcher::default())
+        .manage(commands::wallhaven::WallhavenClient::new())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -132,7 +133,11 @@ pub fn run() {
             commands::kde::mark_kde_wallpaper_handled,
             commands::kde::get_kde_service_status,
             commands::kde::set_kde_service_status,
-            commands::kde::set_kde_run_in_background
+            commands::kde::set_kde_run_in_background,
+            commands::wallhaven::wallhaven_search,
+            commands::wallhaven::wallhaven_download,
+            commands::wallhaven::wallhaven_validate_key,
+            commands::wallhaven::wallhaven_get_wallpaper
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

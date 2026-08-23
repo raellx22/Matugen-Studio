@@ -123,11 +123,20 @@ export default function Presets({
       return;
     }
 
+    const normalizedName = newPresetName.trim();
+    if (presets.some((preset) => preset.name === normalizedName)) {
+      const overwrite = await confirm(`A preset named '${normalizedName}' already exists. Replace it?`, {
+        title: "Replace preset",
+        kind: "warning",
+      });
+      if (!overwrite) return;
+    }
+
     try {
       setIsSaving(true);
       await invoke("save_preset", {
         input: {
-          name: newPresetName.trim(),
+          name: normalizedName,
           wallpaper_path: currentWallpaper,
           scheme_type: currentSchemeType,
           mode: currentMode,
@@ -142,7 +151,7 @@ export default function Presets({
       await loadPresets();
       setShowSaveModal(false);
       setNewPresetName("");
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("Save preset failed:", e);
       alert("Failed to save preset: " + e);
     } finally {

@@ -2,7 +2,10 @@ use base64::{engine::general_purpose, Engine as B64Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+
+static PRESET_STORAGE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 // ── New domain types ──────────────────────────────────────────────────────────
 
@@ -323,23 +326,29 @@ fn load_presets() -> Result<Vec<PresetV2>, String> {
     if raw.is_empty() {
         return Ok(vec![]);
     }
-
-    let first_version = raw[0].get("version").and_then(|v| v.as_u64()).unwrap_or(0);
-
+    let first_version = raw[0]
+        .get("version")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1);
     if first_version >= 2 {
-        let presets: Vec<PresetV2> = raw
-            .into_iter()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect();
-        Ok(presets)
+        raw.into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                serde_json::from_value(value)
+                    .map_err(|error| format!("Preset {} is invalid: {}", index + 1, error))
+            })
+            .collect()
     } else {
         // Legacy local format — migrate and persist.
-        let legacy: Vec<LegacyLocalPreset> = raw
+        let legacy = raw
             .into_iter()
-            .filter_map(|v| serde_json::from_value(v).ok())
-            .collect();
+            .enumerate()
+            .map(|(index, value)| {
+                serde_json::from_value(value)
+                    .map_err(|error| format!("Legacy preset {} is invalid: {}", index + 1, error))
+            })
+            .collect::<Result<Vec<LegacyLocalPreset>, String>>()?;
         let migrated: Vec<PresetV2> = legacy.into_iter().map(migrate_legacy_local_to_v2).collect();
-        // Persist migrated data so the next load is instant.
         write_presets(&migrated)?;
         Ok(migrated)
     }
@@ -347,10 +356,37 @@ fn load_presets() -> Result<Vec<PresetV2>, String> {
 
 fn write_presets(presets: &[PresetV2]) -> Result<(), String> {
     let path = get_presets_file_path()?;
+    let temp_path = path.with_extension("json.tmp");
     let content = serde_json::to_string_pretty(presets)
         .map_err(|e| format!("Failed to serialize presets: {}", e))?;
-    fs::write(&path, content).map_err(|e| format!("Failed to write presets: {}", e))
+    fs::write(&temp_path, content).map_err(|e| format!("Failed to write presets: {}", e))?;
+    fs::rename(&temp_path, &path).map_err(|e| {
+        let _ = fs::remove_file(&temp_path);
+        format!("Failed to commit presets: {}", e)
+    })
 }
+
+fn validate_imported_filename(value: &str, label: &str) -> Result<String, String> {
+    let path = Path::new(value);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Invalid {} filename", label))?;
+
+    if value.contains("..")
+        || value.contains('/')
+        || value.contains('\\')
+        || file_name != value
+    {
+        return Err(format!(
+            "Invalid {} filename '{}': directory components are not allowed",
+            label, value
+        ));
+    }
+
+    Ok(file_name.to_string())
+}
+
 
 // ── Migration ─────────────────────────────────────────────────────────────────
 
@@ -462,6 +498,7 @@ fn migrate_export_v1_to_v2(old: ExportablePresetV1) -> PresetV2 {
 
 #[tauri::command]
 pub fn save_preset(input: SavePresetInput) -> Result<(), String> {
+    let _guard = PRESET_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
     let now = now_iso8601();
 
     let wallpaper = input.wallpaper_path.as_ref().map(|p| {
@@ -523,6 +560,7 @@ pub fn get_presets() -> Result<Vec<PresetV2>, String> {
 
 #[tauri::command]
 pub fn delete_preset(name: String) -> Result<(), String> {
+    let _guard = PRESET_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
     let mut presets = load_presets()?;
     presets.retain(|p| p.name != name);
     write_presets(&presets)
@@ -606,6 +644,7 @@ pub fn export_preset(name: String, output_path: String) -> Result<(), String> {
 /// Returns the saved preset plus any non-fatal warnings.
 #[tauri::command]
 pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
+    let _guard = PRESET_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
     if !file_path.ends_with(".matugen") {
         return Err("File must have .matugen extension".to_string());
     }
@@ -630,7 +669,7 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
     let mut warnings: Vec<String> = Vec::new();
 
     // Extract embedded wallpaper to shared-wallpapers/.
-    if let Some(ref mut wp) = preset.wallpaper {
+    if let Some(wp) = &mut preset.wallpaper {
         if let Some(b64) = wp.base64.take() {
             let wallpapers_dir = dirs::config_dir()
                 .ok_or("Could not find config directory")?
@@ -639,10 +678,11 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
             fs::create_dir_all(&wallpapers_dir)
                 .map_err(|e| format!("Failed to create wallpapers dir: {}", e))?;
 
-            let filename = wp
+            let raw_filename = wp
                 .filename
                 .clone()
                 .unwrap_or_else(|| "wallpaper.png".to_string());
+            let filename = validate_imported_filename(&raw_filename, "wallpaper")?;
             let dest = wallpapers_dir.join(&filename);
 
             match general_purpose::STANDARD.decode(&b64) {
@@ -663,7 +703,7 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
                 }
                 Err(e) => warnings.push(format!("Could not decode wallpaper: {}", e)),
             }
-        } else if let Some(ref orig) = wp.original_path.clone() {
+        } else if let Some(orig) = &wp.original_path {
             // No base64 but there is an original_path — check if it still exists.
             if !PathBuf::from(orig).exists() {
                 warnings.push(format!(
@@ -674,17 +714,19 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
         }
     }
 
-    // Recreate embedded template files and register them in config.toml if missing.
+    // Restore embedded template files, but never trust an imported preset to
+    // activate output paths or shell hooks. Activation remains an explicit
+    // action in the Apps tab where the user chooses the destination and hook.
     let config_dir = dirs::config_dir()
         .ok_or("Could not find config directory")?
         .join("matugen");
     let templates_dir = config_dir.join("templates");
-    let config_path = config_dir.join("config.toml");
 
     for template in &preset.templates {
-        if let Some(ref tmpl_content) = template.content {
+        if let Some(tmpl_content) = &template.content {
             fs::create_dir_all(&templates_dir).ok();
-            let dest = templates_dir.join(&template.name);
+            let template_filename = validate_imported_filename(&template.name, "template")?;
+            let dest = templates_dir.join(&template_filename);
             if !dest.exists() {
                 if let Err(e) = fs::write(&dest, tmpl_content) {
                     warnings.push(format!(
@@ -694,31 +736,10 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
                     continue;
                 }
             }
-
-            // Register in config.toml if not already present.
-            if let Some(ref out_path) = template.output_path {
-                let name_key = template.name.replace('.', "_").replace('-', "_");
-                let mut cfg = if config_path.exists() {
-                    fs::read_to_string(&config_path).unwrap_or_default()
-                } else {
-                    "[config]\n".to_string()
-                };
-
-                if !cfg.contains(&format!("[templates.{}]", name_key)) {
-                    cfg.push_str(&format!("\n[templates.{}]\n", name_key));
-                    cfg.push_str(&format!("input_path = \"{}\"\n", dest.to_string_lossy()));
-                    cfg.push_str(&format!("output_path = \"{}\"\n", out_path));
-                    if let Some(ref hook) = template.post_hook {
-                        cfg.push_str(&format!("post_hook = \"{}\"\n", hook));
-                    }
-                    if let Err(e) = fs::write(&config_path, &cfg) {
-                        warnings.push(format!(
-                            "Could not register template '{}' in config.toml: {}",
-                            template.name, e
-                        ));
-                    }
-                }
-            }
+            warnings.push(format!(
+                "Template '{}' was restored but not activated. Review and install it from the Apps tab to choose its output path and optional hook.",
+                template.name
+            ));
         }
     }
 
@@ -738,4 +759,20 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
     write_presets(&existing)?;
 
     Ok(ImportResult { preset, warnings })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_imported_filename;
+
+    #[test]
+    fn imported_filenames_cannot_escape_their_target_directory() {
+        assert!(validate_imported_filename("../../.bashrc", "wallpaper").is_err());
+        assert!(validate_imported_filename("/tmp/payload", "template").is_err());
+        assert!(validate_imported_filename("folder\\payload", "template").is_err());
+        assert_eq!(
+            validate_imported_filename("theme.css", "template").unwrap(),
+            "theme.css"
+        );
+    }
 }

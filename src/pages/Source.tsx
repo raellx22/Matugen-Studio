@@ -4,11 +4,14 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { ChevronLeft, ChevronRight, FolderOpen, Monitor, Palette, Shuffle, Star } from 'lucide-react';
 import { getWallpaperPage } from '../utils/wallpaperPagination';
+import { useSessionState } from '../utils/sessionState';
+import WallhavenBrowser from './WallhavenBrowser';
 
 interface SourceProps {
   itemsPerPage: number;
   onApplyAndGenerate: (path: string) => Promise<void>;
   onSelectForColors: (path: string) => void;
+  themeColorHex?: string | null;
 }
 
 interface ThumbnailProps {
@@ -48,7 +51,7 @@ const compactPaginationButtonStyle = (disabled: boolean): CSSProperties => ({
   opacity: disabled ? 0.6 : 1,
 });
 
-const CompactPaginationButton = ({ label, title, disabled, onClick, children }: CompactPaginationButtonProps) => (
+export const CompactPaginationButton = ({ label, title, disabled, onClick, children }: CompactPaginationButtonProps) => (
   <button
     type="button"
     aria-label={label}
@@ -84,6 +87,7 @@ const Thumbnail = ({ thumbnailPath, hasError }: ThumbnailProps) => {
 
   return (
     <img
+      className="template-thumb-img"
       src={convertFileSrc(thumbnailPath)}
       alt="Wallpaper"
       loading="lazy"
@@ -93,8 +97,9 @@ const Thumbnail = ({ thumbnailPath, hasError }: ThumbnailProps) => {
   );
 };
 
-export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForColors }: SourceProps) {
+export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForColors, themeColorHex }: SourceProps) {
   const { t } = useTranslation();
+  const [sourceMode, setSourceMode] = useSessionState<'local' | 'wallhaven'>('source.mode', 'local');
   const [monitorCount, setMonitorCount] = useState(1);
   const [multiMonitorEnabled, setMultiMonitorEnabled] = useState(localStorage.getItem('multiMonitorEnabled') === 'true');
   const [activeMonitor, setActiveMonitor] = useState(-1);
@@ -400,6 +405,25 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
         </div>
       </div>
 
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          type="button"
+          className={`btn btn-compact ${sourceMode === 'local' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setSourceMode('local')}
+        >
+          {t('source.tabLocal')}
+        </button>
+        <button
+          type="button"
+          className={`btn btn-compact ${sourceMode === 'wallhaven' ? 'btn-primary' : 'btn-secondary'}`}
+          onClick={() => setSourceMode('wallhaven')}
+        >
+          {t('source.tabWallhaven')}
+        </button>
+      </div>
+
+      {sourceMode === 'local' && (
+        <>
       {multiMonitorEnabled && (
         <div style={{ background: 'var(--surface)', padding: 16, borderRadius: 16, border: '1px solid var(--border)', display: 'flex', gap: 24, alignItems: 'center' }}>
           <div style={{ display: 'flex', gap: 8, flex: 1, flexWrap: 'wrap' }}>
@@ -481,6 +505,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
             </div>
           )}
           <div
+            className="wallpaper-grid"
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
@@ -532,7 +557,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                       <Star size={18} fill={isFav ? '#ffd700' : 'none'} />
                     </button>
                   </div>
-                  <div style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
+                  <div className="template-thumb" style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
                     <Thumbnail thumbnailPath={thumbnailPaths[path] ?? null} hasError={Boolean(thumbnailErrors[path])} />
                   </div>
                   <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
@@ -573,6 +598,12 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
             </div>
           </div>
         </>
+      )}
+        </>
+      )}
+
+      {sourceMode === 'wallhaven' && (
+        <WallhavenBrowser onApplyAndGenerate={handleApplyAndGenerate} onSelectForColors={onSelectForColors} themeColorHex={themeColorHex} />
       )}
 
       <style>

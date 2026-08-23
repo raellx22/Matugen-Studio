@@ -90,7 +90,8 @@ pub fn generate_scheme_from_image_blocking(
         &contrast,
         &None,
         &None,
-    );
+    )
+    .map_err(|error| error.to_string())?;
     schemes.dark.insert("source_color".to_owned(), source_color);
     schemes
         .light
