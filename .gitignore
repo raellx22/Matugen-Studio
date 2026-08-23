@@ -22,3 +22,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# prowl-agent: derived state
+.prowl/index.db*
+.prowl/cache/
+.prowl/logs/
+.prowl/editor/
+.prowl/setup-applies.json
+.prowl-setup.lock
+# /prowl-agent: derived state
+
+# local coding-agent session/tooling state (not project source)
+.omp/
+.mcp.json
+.prowl/config.toml
+.prowl/rules.toml
+.prowl/index-refresh.lock
