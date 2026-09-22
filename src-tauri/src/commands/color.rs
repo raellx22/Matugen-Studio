@@ -1,10 +1,10 @@
-use material_colors::theme::ThemeBuilder;
+use super::settings::GenerationSettings;
+use material_colors::{color::Argb, theme::ThemeBuilder};
 use matugen_core::{
     color::base16::{generate_base16_schemes, Backend},
-    color::color::{get_luminance, get_source_color, Source},
+    color::color::{get_luminance, get_source_candidates_from_image, Source},
     helpers::merge_json_source,
-    scheme::{get_custom_color_schemes, get_schemes, SchemeTypes, SchemesEnum},
-    util::arguments::FilterType,
+    scheme::{SchemeTypes, SchemesEnum},
 };
 use serde_json::Value;
 
@@ -23,9 +23,13 @@ struct SchemeRequest {
 pub async fn generate_scheme_from_image(
     image_path: String,
     scheme_type: String,
+    settings: Option<GenerationSettings>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        generate_scheme_from_image_blocking(image_path, scheme_type)
+        let settings = settings
+            .map(Ok)
+            .unwrap_or_else(|| super::settings::get_studio_settings().map(|s| s.generation))?;
+        generate_scheme_from_image_blocking(image_path, scheme_type, settings)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -34,22 +38,18 @@ pub async fn generate_scheme_from_image(
 pub fn generate_scheme_from_image_blocking(
     image_path: String,
     scheme_type: String,
+    settings: GenerationSettings,
 ) -> Result<serde_json::Value, String> {
+    settings.validate()?;
     let wallpaper_analysis = analyse_wallpaper(&image_path).ok();
-    let source = Source::Image { path: image_path };
-    let resize_filter = Some(FilterType::Triangle);
-    let fallback = None;
-    let prefer = None;
-    let source_color_index = Some(0);
-
-    let source_color = get_source_color(
-        &source,
-        &resize_filter,
-        fallback,
-        &prefer,
-        &source_color_index,
+    let candidates = get_source_candidates_from_image(
+        &image_path,
+        material_colors::image::FilterType::Triangle,
+        None,
     )
-    .map_err(|e| format!("Error getting source color: {}", e))?;
+    .map_err(|e| e.to_string())?;
+    let (seed_index, source_color) = select_seed(&candidates, settings.seed_index)?;
+    let source = Source::Image { path: image_path };
 
     let smart_monochrome = wallpaper_analysis
         .as_ref()
@@ -77,21 +77,7 @@ pub fn generate_scheme_from_image_blocking(
         _ => SchemeTypes::SchemeContent,
     };
     let theme = ThemeBuilder::with_source(source_color).build();
-    let contrast = Some(0.0); // Resetting static contrast to allow natural scheme behavior
-    let scheme_type_opt = Some(scheme_type_enum);
-
-    let (scheme_dark, scheme_light) = get_schemes(source_color, &scheme_type_opt, &contrast);
-    let mut schemes = get_custom_color_schemes(
-        source_color,
-        scheme_dark,
-        scheme_light,
-        &None,
-        &scheme_type_opt,
-        &contrast,
-        &None,
-        &None,
-    )
-    .map_err(|error| error.to_string())?;
+    let mut schemes = super::material::schemes(source_color, scheme_type_enum, &settings)?;
     schemes.dark.insert("source_color".to_owned(), source_color);
     schemes
         .light
@@ -102,6 +88,9 @@ pub fn generate_scheme_from_image_blocking(
     let mut json = merge_json_source(
         serde_json::json!({
             "source_color_hex": source_color.to_hex_with_pound(),
+            "source_candidates": candidates.iter().enumerate().map(|(index, color)| serde_json::json!({"index": index, "hex": color.to_hex_with_pound()})).collect::<Vec<_>>(),
+            "seed_index": seed_index,
+            "generation_settings": settings,
             "source_color_luminance": get_luminance(&source_color),
             "wallpaper_luminance": wallpaper_analysis.as_ref().map(|analysis| analysis.luminance),
             "wallpaper_grayscale_score": wallpaper_analysis.as_ref().map(|analysis| analysis.grayscale_score),
@@ -130,6 +119,17 @@ pub fn generate_scheme_from_image_blocking(
     }
 
     Ok(json)
+}
+
+fn select_seed(candidates: &[Argb], requested: i64) -> Result<(usize, Argb), String> {
+    if candidates.is_empty() {
+        return Err("No usable source colors found".into());
+    }
+    let index = usize::try_from(requested)
+        .ok()
+        .filter(|i| *i < candidates.len())
+        .unwrap_or(0);
+    Ok((index, candidates[index]))
 }
 
 fn parse_scheme_request(scheme_type: &str) -> SchemeRequest {
@@ -339,4 +339,88 @@ fn analyse_wallpaper(image_path: &str) -> Result<WallpaperAnalysis, String> {
         luminance: total_luminance / count,
         grayscale_score: total_grayscale_delta / count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn seed_selection_and_fallback_are_safe() {
+        let colors = [Argb::new(255, 255, 0, 0), Argb::new(255, 0, 0, 255)];
+        assert_eq!(select_seed(&colors, 0).unwrap(), (0, colors[0]));
+        assert_eq!(select_seed(&colors, 1).unwrap(), (1, colors[1]));
+        for index in [-1, 2, i64::MAX] {
+            assert_eq!(select_seed(&colors, index).unwrap(), (0, colors[0]));
+        }
+        assert!(select_seed(&[], 0).is_err());
+    }
+    #[test]
+    fn real_image_candidates_regenerate_every_scheme_family() {
+        let path = std::env::temp_dir().join(format!("studio-seeds-{}.png", std::process::id()));
+        let image = image::RgbImage::from_fn(112, 112, |x, _| match x / 28 {
+            0 => image::Rgb([220, 50, 40]),
+            1 => image::Rgb([40, 170, 70]),
+            2 => image::Rgb([30, 70, 220]),
+            _ => image::Rgb([240, 170, 30]),
+        });
+        image.save(&path).unwrap();
+        let path_str = path.to_string_lossy().to_string();
+        let candidates = get_source_candidates_from_image(
+            &path_str,
+            material_colors::image::FilterType::Triangle,
+            None,
+        )
+        .unwrap();
+        assert!(candidates.len() > 1);
+        let original = matugen_core::color::color::get_source_color_from_image(
+            &path_str,
+            material_colors::image::FilterType::Triangle,
+            None,
+            &None,
+            &Some(0),
+        )
+        .unwrap();
+        assert_eq!(candidates[0], original);
+        let first = generate_scheme_from_image_blocking(
+            path_str.clone(),
+            "Tinted Smart".into(),
+            GenerationSettings::default(),
+        )
+        .unwrap();
+        let second = generate_scheme_from_image_blocking(
+            path_str.clone(),
+            "Tinted Smart".into(),
+            GenerationSettings {
+                seed_index: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(first["source_color_hex"], second["source_color_hex"]);
+        assert_ne!(first["colors"], second["colors"]);
+        assert_eq!(first["source_candidates"], second["source_candidates"]);
+        for prefix in ["Tinted ", "Classic "] {
+            for variant in [
+                "Smart",
+                "Content",
+                "Expressive",
+                "Fidelity",
+                "Fruit Salad",
+                "Neutral",
+                "Rainbow",
+                "Tonal Spot",
+                "Vibrant",
+                "Monochrome",
+            ] {
+                let result = generate_scheme_from_image_blocking(
+                    path_str.clone(),
+                    format!("{prefix}{variant}"),
+                    GenerationSettings::default(),
+                )
+                .unwrap();
+                assert!(result["colors"]["primary"]["dark"]["color"].is_string());
+            }
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }

@@ -3102,6 +3102,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "material-colors"
+version = "0.5.0"
+source = "git+https://github.com/Aiving/material-colors.git?rev=3fe7f52cde8c221d9a44dec84bca3706a71bb080#3fe7f52cde8c221d9a44dec84bca3706a71bb080"
+dependencies = [
+ "ahash",
+ "indexmap 2.14.0",
+ "serde",
+]
+
+[[package]]
 name = "matugen-core"
 version = "4.1.0"
 dependencies = [
@@ -3121,7 +3131,7 @@ dependencies = [
  "indexmap 2.14.0",
  "jxl-oxide",
  "log",
- "material-colors",
+ "material-colors 0.4.2",
  "owo-colors",
  "palette",
  "paris-log",
@@ -3143,7 +3153,8 @@ dependencies = [
  "dirs 5.0.1",
  "execute",
  "image 0.24.9",
- "material-colors",
+ "material-colors 0.4.2",
+ "material-colors 0.5.0",
  "matugen-core",
  "md5",
  "percent-encoding",

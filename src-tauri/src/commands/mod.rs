@@ -6,3 +6,7 @@ pub mod preset;
 pub mod proc;
 pub mod template;
 pub mod wallhaven;
+
+pub mod integrations;
+pub mod material;
+pub mod settings;

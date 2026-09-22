@@ -40,3 +40,6 @@ tokio = { version = "1", features = ["time", "sync"] }
 zbus = "5.15"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Isolated 2025 renderer; keep the existing core on material-colors 0.4.2.
+material-colors-modern = { package = "material-colors", git = "https://github.com/Aiving/material-colors.git", rev = "3fe7f52cde8c221d9a44dec84bca3706a71bb080" }

@@ -1,3 +1,4 @@
+use super::settings::{GenerationSettings, KdeIntegrationSettings};
 use base64::{engine::general_purpose, Engine as B64Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,7 +24,8 @@ pub struct WallpaperInfo {
 pub struct SchemeInfo {
     pub scheme_type: String,
     pub mode: String,
-    pub contrast: Option<f64>,
+    #[serde(flatten)]
+    pub generation: GenerationSettings,
     pub opacity: Option<f64>,
     pub source_color_hex: Option<String>,
     pub scheme_data: serde_json::Value,
@@ -55,6 +57,8 @@ pub struct DesktopSettings {
     pub apply_wallpaper: bool,
     pub apply_kde_colorscheme: bool,
     pub apply_templates: bool,
+    #[serde(default)]
+    pub integrations: KdeIntegrationSettings,
 }
 
 impl Default for DesktopSettings {
@@ -64,6 +68,7 @@ impl Default for DesktopSettings {
             apply_wallpaper: true,
             apply_kde_colorscheme: true,
             apply_templates: true,
+            integrations: KdeIntegrationSettings::default(),
         }
     }
 }
@@ -92,7 +97,8 @@ pub struct SavePresetInput {
     pub wallpaper_path: Option<String>,
     pub scheme_type: String,
     pub mode: String,
-    pub contrast: Option<f64>,
+    #[serde(flatten)]
+    pub generation: GenerationSettings,
     pub opacity: Option<f64>,
     pub source_color_hex: Option<String>,
     pub scheme_data: serde_json::Value,
@@ -373,11 +379,7 @@ fn validate_imported_filename(value: &str, label: &str) -> Result<String, String
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("Invalid {} filename", label))?;
 
-    if value.contains("..")
-        || value.contains('/')
-        || value.contains('\\')
-        || file_name != value
-    {
+    if value.contains("..") || value.contains('/') || value.contains('\\') || file_name != value {
         return Err(format!(
             "Invalid {} filename '{}': directory components are not allowed",
             label, value
@@ -386,7 +388,6 @@ fn validate_imported_filename(value: &str, label: &str) -> Result<String, String
 
     Ok(file_name.to_string())
 }
-
 
 // ── Migration ─────────────────────────────────────────────────────────────────
 
@@ -420,7 +421,7 @@ fn migrate_legacy_local_to_v2(old: LegacyLocalPreset) -> PresetV2 {
         scheme: SchemeInfo {
             scheme_type: old.scheme_type,
             mode: "dark".to_string(),
-            contrast: None,
+            generation: GenerationSettings::default(),
             opacity: None,
             source_color_hex: source_color,
             scheme_data: old.scheme_data,
@@ -483,7 +484,7 @@ fn migrate_export_v1_to_v2(old: ExportablePresetV1) -> PresetV2 {
         scheme: SchemeInfo {
             scheme_type: old.scheme_type,
             mode: "dark".to_string(),
-            contrast: None,
+            generation: GenerationSettings::default(),
             opacity: None,
             source_color_hex: source_color,
             scheme_data: old.scheme_data,
@@ -499,6 +500,10 @@ fn migrate_export_v1_to_v2(old: ExportablePresetV1) -> PresetV2 {
 #[tauri::command]
 pub fn save_preset(input: SavePresetInput) -> Result<(), String> {
     let _guard = PRESET_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
+    input.generation.validate()?;
+    if let Some(desktop) = &input.desktop {
+        desktop.integrations.validate()?;
+    }
     let now = now_iso8601();
 
     let wallpaper = input.wallpaper_path.as_ref().map(|p| {
@@ -534,7 +539,7 @@ pub fn save_preset(input: SavePresetInput) -> Result<(), String> {
         scheme: SchemeInfo {
             scheme_type: input.scheme_type,
             mode: input.mode,
-            contrast: input.contrast,
+            generation: input.generation,
             opacity: input.opacity,
             source_color_hex: source_color,
             scheme_data: input.scheme_data,
@@ -666,6 +671,8 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
         migrate_export_v1_to_v2(v1)
     };
 
+    preset.scheme.generation.validate()?;
+    preset.desktop.integrations.validate()?;
     let mut warnings: Vec<String> = Vec::new();
 
     // Extract embedded wallpaper to shared-wallpapers/.
@@ -774,5 +781,80 @@ mod tests {
             validate_imported_filename("theme.css", "template").unwrap(),
             "theme.css"
         );
+    }
+}
+
+#[cfg(test)]
+mod advanced_tests {
+    use super::super::settings::MaterialSpec;
+    use super::*;
+    fn old_preset() -> PresetV2 {
+        serde_json::from_value(serde_json::json!({
+            "version":2,"name":"legacy","created_at":null,"updated_at":null,"app_version":null,"wallpaper":null,
+            "scheme":{"scheme_type":"Tinted Content","mode":"dark","contrast":null,"opacity":null,"source_color_hex":"#123456","scheme_data":{"colors":{}}},
+            "custom_colors":[],"templates":[],"desktop":{"target_de":"KDE","apply_wallpaper":true,"apply_kde_colorscheme":true,"apply_templates":true}
+        })).unwrap()
+    }
+    #[test]
+    fn older_presets_keep_defaults_and_snapshots() {
+        let old = old_preset();
+        assert_eq!(old.scheme.generation, GenerationSettings::default());
+        assert_eq!(old.scheme.source_color_hex.as_deref(), Some("#123456"));
+        assert!(!old.desktop.integrations.klassy.enabled);
+        let migrated = migrate_legacy_local_to_v2(LegacyLocalPreset {
+            name: "old".into(),
+            wallpaper_path: None,
+            scheme_type: "Content".into(),
+            scheme_data: serde_json::json!({"colors":{}}),
+        });
+        assert_eq!(migrated.scheme.generation.seed_index, 0);
+    }
+    #[test]
+    fn new_settings_roundtrip_in_original_preset_format() {
+        let mut preset = old_preset();
+        preset.scheme.generation = GenerationSettings {
+            seed_index: 2,
+            contrast: 0.3,
+            chroma: 1.4,
+            tone: 0.8,
+            material_spec: MaterialSpec::V2021,
+        };
+        preset.desktop.integrations.klassy.enabled = true;
+        preset.desktop.integrations.klassy.titlebar_opacity = Some(83);
+        let json = serde_json::to_value(&preset).unwrap();
+        assert_eq!(json["scheme"]["contrast"], 0.3);
+        let loaded: PresetV2 = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.scheme.generation, preset.scheme.generation);
+        assert_eq!(loaded.desktop.integrations, preset.desktop.integrations);
+    }
+    #[test]
+    fn import_export_preserves_advanced_settings_on_disk() {
+        // Run actual storage commands in a child test process with its own XDG root.
+        // Never change the user's presets or mutate this process's environment.
+        if std::env::var_os("STUDIO_PRESET_TEST_CHILD").is_some() {
+            let mut preset = old_preset();
+            preset.scheme.generation.seed_index = 2;
+            preset.scheme.generation.chroma = 1.7;
+            preset.desktop.integrations.rounded_corners.enabled = true;
+            write_presets(&[preset.clone()]).unwrap();
+            let file = dirs::config_dir()
+                .unwrap()
+                .join("roundtrip.matugen")
+                .to_string_lossy()
+                .to_string();
+            export_preset(preset.name.clone(), file.clone()).unwrap();
+            let imported = import_preset(file).unwrap().preset;
+            assert_eq!(imported.scheme.generation, preset.scheme.generation);
+            assert_eq!(imported.desktop.integrations, preset.desktop.integrations);
+            assert_eq!(load_presets().unwrap().len(), 2);
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("studio-preset-test-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "commands::preset::advanced_tests::import_export_preserves_advanced_settings_on_disk", "--nocapture"])
+            .env("STUDIO_PRESET_TEST_CHILD", "1").env("XDG_CONFIG_HOME", &root).status().unwrap();
+        assert!(status.success());
+        fs::remove_dir_all(root).unwrap();
     }
 }

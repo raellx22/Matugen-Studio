@@ -98,6 +98,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            commands::settings::get_studio_settings,
+            commands::settings::set_studio_settings,
+            commands::integrations::detect_kde_integrations,
+            commands::integrations::apply_kde_integrations,
             commands::color::generate_scheme_from_image,
             commands::template::list_bundled_templates,
             commands::template::list_available_templates,
