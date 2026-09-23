@@ -655,8 +655,8 @@ pub fn preview_template(
 
     let mut engine = Engine::new();
     State::add_engine_filters(&mut engine);
-    let source = fs::read_to_string(&requested)
-        .map_err(|e| format!("Failed to read template: {}", e))?;
+    let source =
+        fs::read_to_string(&requested).map_err(|e| format!("Failed to read template: {}", e))?;
     engine
         .add_template("preview".to_string(), source)
         .map_err(|error| format!("Failed to parse template: {}", error))?;

@@ -319,7 +319,11 @@ fn get_color(context: &serde_json::Value, name: &str, variant: &str) -> Option<S
     None
 }
 
-fn required_color(context: &serde_json::Value, name: &str, variant: &str) -> Result<String, String> {
+fn required_color(
+    context: &serde_json::Value,
+    name: &str,
+    variant: &str,
+) -> Result<String, String> {
     get_color(context, name, variant)
         .ok_or_else(|| format!("Required GTK color '{}' is missing", name))
 }
@@ -332,7 +336,12 @@ fn required_color_or(
 ) -> Result<String, String> {
     get_color(context, name, variant)
         .or_else(|| get_color(context, fallback, variant))
-        .ok_or_else(|| format!("Required GTK colors '{}' and '{}' are missing", name, fallback))
+        .ok_or_else(|| {
+            format!(
+                "Required GTK colors '{}' and '{}' are missing",
+                name, fallback
+            )
+        })
 }
 
 fn normalize_hex(value: &str) -> Option<String> {

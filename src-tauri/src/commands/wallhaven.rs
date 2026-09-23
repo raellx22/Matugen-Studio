@@ -190,10 +190,7 @@ pub async fn wallhaven_search(
         "categories",
         params.categories.unwrap_or_else(|| "111".to_string()),
     ));
-    query.push((
-        "purity",
-        params.purity.unwrap_or_else(|| "100".to_string()),
-    ));
+    query.push(("purity", params.purity.unwrap_or_else(|| "100".to_string())));
     query.push((
         "sorting",
         params.sorting.unwrap_or_else(|| "date_added".to_string()),
