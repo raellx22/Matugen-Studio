@@ -26,3 +26,10 @@ Matugen Studio bundles and/or derives work from the following projects:
 
 Matugen Studio rewrites color definitions in derived GTK theme copies generated
 from the bundled adw-gtk3 assets.
+
+## Material colors (2025 adapter)
+
+The 2025 renderer links `material-colors` from Aiving's upstream repository at
+revision `3fe7f52cde8c221d9a44dec84bca3706a71bb080`, alongside the original 0.4.2
+library used by matugen-core. Licensed under MIT OR Apache-2.0. Source and license
+texts: https://github.com/Aiving/material-colors/tree/3fe7f52cde8c221d9a44dec84bca3706a71bb080.
