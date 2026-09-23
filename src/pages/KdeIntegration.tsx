@@ -15,9 +15,14 @@ import {
   Square,
 } from "lucide-react";
 
+import DecorationIntegrations from "./DecorationIntegrations";
+import type { KdeIntegrationSettings } from "../utils/studioSettings";
+
 type ThemeContext = Record<string, unknown>;
 
 interface KdeIntegrationProps {
+  integrationSettings: KdeIntegrationSettings;
+  onIntegrationSettingsChange: (settings: KdeIntegrationSettings) => Promise<void>;
   schemeData: ThemeContext | null;
   themeContext: ThemeContext | null;
   wallpaperPath: string | null;
@@ -52,6 +57,8 @@ interface GtkThemeResult {
 }
 
 export default function KdeIntegration({
+  integrationSettings,
+  onIntegrationSettingsChange,
   schemeData,
   themeContext,
   schemeType,
@@ -266,6 +273,7 @@ export default function KdeIntegration({
       </div>
 
       <div className="desktop-grid">
+        <DecorationIntegrations settings={integrationSettings} onChange={onIntegrationSettingsChange} />
         <section className="card desktop-card">
           <div className="desktop-card-title">
             <Monitor size={20} />

@@ -5,6 +5,15 @@ import { initReactI18next } from 'react-i18next';
 const resources = {
   en: {
     translation: {
+      advanced: {
+        title: "Advanced Color Generation", seedPicker: "Source color candidates", seedTooltip: "Seed {{index}} · {{hex}}",
+        spec: "Material Specification", contrast: "Contrast", chroma: "Chroma", tone: "Tone",
+        contrastHelp: "Controls contrast between Material surfaces and foregrounds.", chromaHelp: "Multiplies color intensity; 1 keeps the original chroma.", toneHelp: "Multiplies background lightness; 1 keeps the original tone.",
+        toneNote: "Light mode uses a minimum tone multiplier of 0.5.", apply: "Apply", reset: "Reset to Defaults",
+        integrations: "KDE Integrations", detecting: "Detecting…", notDetected: "Not detected", detected: "Detected", unsupported: "Version not supported", enableInKde: "Enable in KDE settings",
+        enableKlassy: "Enable Klassy integration", activeOutline: "Sync active window outline", manageOpacity: "Manage active titlebar opacity", opacity: "Titlebar opacity",
+        enableRounded: "Enable Rounded Corners integration", syncOutline: "Sync outline color", outlineSource: "Outline source", automatic: "Automatic",
+      },
       sidebar: {
         source: "Wallpapers",
         presets: "Presets",
@@ -294,6 +303,15 @@ const resources = {
   },
   'pt-BR': {
     translation: {
+      advanced: {
+        title: "Geração Avançada de Cores", seedPicker: "Cores de origem detectadas", seedTooltip: "Cor {{index}} · {{hex}}",
+        spec: "Especificação Material", contrast: "Contraste", chroma: "Chroma", tone: "Tom",
+        contrastHelp: "Controla o contraste entre superfícies e elementos de primeiro plano.", chromaHelp: "Multiplica a intensidade das cores; 1 mantém o chroma original.", toneHelp: "Multiplica a luminosidade dos fundos; 1 mantém o tom original.",
+        toneNote: "O modo claro usa um multiplicador de tom mínimo de 0,5.", apply: "Aplicar", reset: "Restaurar Padrões",
+        integrations: "Integrações KDE", detecting: "Detectando…", notDetected: "Não detectado", detected: "Detectado", unsupported: "Versão não suportada", enableInKde: "Ative nas configurações do KDE",
+        enableKlassy: "Ativar integração Klassy", activeOutline: "Sincronizar contorno da janela ativa", manageOpacity: "Controlar opacidade da barra de título ativa", opacity: "Opacidade da barra de título",
+        enableRounded: "Ativar integração Rounded Corners", syncOutline: "Sincronizar cor do contorno", outlineSource: "Origem do contorno", automatic: "Automático",
+      },
       sidebar: {
         source: "Wallpapers",
         presets: "Predefinições",

@@ -8,6 +8,9 @@ import ShadeSlider from '@uiw/react-color-shade-slider';
 import { hsvaToHex, hexToHsva, hexToRgba } from '@uiw/color-convert';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { listen } from "@tauri-apps/api/event";
+import AdvancedGeneration from "./pages/AdvancedGeneration";
+import { defaultGeneration, defaultIntegrations, defaultStudioSettings, type GenerationSettings, type StudioSettings } from "./utils/studioSettings";
 import Templates from "./pages/Templates";
 import Source from "./pages/Source";
 import Presets from "./pages/Presets";
@@ -42,6 +45,9 @@ interface SchemeData {
   wallpaper_luminance?: number;
   source_color_luminance?: number;
   source_color_hex?: string;
+  source_candidates?: { index: number; hex: string }[];
+  seed_index?: number;
+  generation_settings?: GenerationSettings;
   [key: string]: unknown;
 }
 
@@ -123,6 +129,48 @@ function App() {
   const [mode, setMode] = useState<"dark" | "light" | "auto">("auto");
 
   const schemeGenerationRef = useRef(0);
+  const [studioSettings, setStudioSettings] = useState<StudioSettings>(defaultStudioSettings);
+  const studioSettingsRef = useRef(defaultStudioSettings);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const settingsQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const persistSettings = (patch: Partial<StudioSettings>): Promise<StudioSettings> => {
+    const next = settingsQueue.current.catch(() => undefined).then(async () => {
+      const saved = await invoke<StudioSettings>("set_studio_settings", { settings: { ...studioSettingsRef.current, ...patch } });
+      studioSettingsRef.current = saved;
+      setStudioSettings(saved);
+      return saved;
+    });
+    settingsQueue.current = next;
+    return next;
+  };
+  useEffect(() => {
+    let cancelled = false;
+    invoke<StudioSettings>("get_studio_settings").then(async settings => {
+      if (cancelled) return;
+      // Migrate the existing frontend-only overrides and GTK preference once.
+      if (settings.gtk_enabled === null) {
+        const service = await invoke<{ gtk_enabled: boolean }>("get_kde_service_status");
+        const migratedGtkEnabled = localStorage.getItem(GTK_THEME_ENABLED_STORAGE_KEY) === null ? service.gtk_enabled : gtkThemeEnabled;
+        settings = await invoke<StudioSettings>("set_studio_settings", { settings: { ...settings, kde_overrides: kdeColorOverrides, gtk_enabled: migratedGtkEnabled } });
+      }
+      if (cancelled) return;
+      studioSettingsRef.current = settings;
+      setStudioSettings(settings);
+      setMode(settings.mode);
+      setSchemeType(settings.scheme_type);
+      setKdeColorOverrides(settings.kde_overrides);
+      setGtkThemeEnabled(settings.gtk_enabled ?? false);
+      setSettingsReady(true);
+    }).catch(e => notify("Failed to load color settings: " + e, "error"));
+    const subscription = listen<{ wallpaper: string; context: SchemeData }>("studio-wallpaper-generated", event => {
+      ++schemeGenerationRef.current;
+      setWallpaperPath(event.payload.wallpaper);
+      setSchemeData(event.payload.context);
+      setIsLoading(false);
+    });
+    return () => { cancelled = true; void subscription.then(dispose => dispose()); };
+  }, []);
+
 
   const effectiveMode = useMemo(() => {
     if (mode === "dark") return "dark";
@@ -306,6 +354,8 @@ function App() {
   ) => {
     if (!baseContext) return;
     await invoke("apply_kde_colorscheme", { context: baseContext });
+    const warnings = await invoke<string[]>("apply_kde_integrations", { context: baseContext });
+    warnings.forEach(warning => notify(warning, "info"));
     const overrideValues = KDE_COLOR_CONTROLS
       .map(control => ({ key: control.key, hex: normalizeHex(overrides[control.key]) }))
       .filter((entry): entry is { key: string; hex: string } => Boolean(entry.hex));
@@ -317,6 +367,7 @@ function App() {
   const saveKdeColorOverrides = (next: Record<string, string>) => {
     setKdeColorOverrides(next);
     localStorage.setItem(KDE_COLOR_OVERRIDES_STORAGE_KEY, JSON.stringify(next));
+    void persistSettings({ kde_overrides: next }).catch(e => notify(String(e), "error"));
   };
 
   const getKdeControlColor = (control: KdeColorControl, overrides: Record<string, string> = kdeColorOverrides, data: any = schemeData) => {
@@ -326,6 +377,7 @@ function App() {
   const persistGtkThemeEnabled = (enabled: boolean) => {
     setGtkThemeEnabled(enabled);
     localStorage.setItem(GTK_THEME_ENABLED_STORAGE_KEY, String(enabled));
+    void persistSettings({ gtk_enabled: enabled }).catch(e => notify(String(e), "error"));
   };
 
   const persistGtkThemeDark = (dark: boolean) => {
@@ -372,6 +424,7 @@ function App() {
   };
 
   const handleModeChange = async (nextMode: "dark" | "light" | "auto") => {
+    try { await persistSettings({ mode: nextMode }); } catch (e) { notify(String(e), "error"); return; }
     setMode(nextMode);
     if (!schemeData) return;
 
@@ -405,9 +458,8 @@ function App() {
         setWallpaperPath(path);
         setIsLoading(true);
 
-        const data = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+        const data = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
         if (schemeGenerationRef.current !== generation) return;
-        console.log("Data received:", data);
         setSchemeData(data);
         setErrorMsg(null);
       }
@@ -437,11 +489,12 @@ function App() {
 
   const handleSchemeTypeChange = async (newType: string) => {
     const generation = ++schemeGenerationRef.current;
+    try { await persistSettings({ scheme_type: newType }); } catch (e) { notify(String(e), "error"); return; }
     setSchemeType(newType);
     if (wallpaperPath) {
       try {
         setIsLoading(true);
-        const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: wallpaperPath, schemeType: newType });
+        const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: wallpaperPath, schemeType: newType, settings: studioSettingsRef.current.generation });
         if (schemeGenerationRef.current !== generation) return;
         const data = fixMatugenColors(rawData);
         setSchemeData(data);
@@ -459,6 +512,23 @@ function App() {
     }
   };
 
+  const handleGenerationChange = async (generation: GenerationSettings) => {
+    if (!settingsReady || isLoading) return;
+    const request = ++schemeGenerationRef.current;
+    setIsLoading(true);
+    try {
+      await persistSettings({ generation });
+      if (wallpaperPath) {
+        const data = fixMatugenColors(await invoke<SchemeData>("generate_scheme_from_image", { imagePath: wallpaperPath, schemeType, settings: generation }));
+        if (request !== schemeGenerationRef.current) return;
+        setSchemeData(data);
+        await applyGeneratedThemeContext(data);
+      }
+      setErrorMsg(null);
+    } catch (e) { setErrorMsg(String(e)); notify(String(e), "error"); }
+    finally { if (request === schemeGenerationRef.current) setIsLoading(false); }
+  };
+
   const handleApplyAndGenerate = async (path: string) => {
     const generation = ++schemeGenerationRef.current;
     setWallpaperPath(path);
@@ -467,7 +537,7 @@ function App() {
       await invoke("mark_kde_wallpaper_handled", { wallpaperPath: path }).catch(e =>
         console.warn("Failed to sync KDE watcher state:", e)
       );
-      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
       if (schemeGenerationRef.current !== generation) return;
       const data = fixMatugenColors(rawData);
       setSchemeData(data);
@@ -490,7 +560,7 @@ function App() {
     setActiveTab('colors');
     try {
       setIsLoading(true);
-      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
       if (schemeGenerationRef.current !== generation) return;
       const data = fixMatugenColors(rawData);
       setSchemeData(data);
@@ -617,6 +687,15 @@ function App() {
     const scheme_data = preset.scheme.scheme_data;
     const scheme_type = preset.scheme.scheme_type;
 
+    ++schemeGenerationRef.current;
+    try {
+      await persistSettings({
+        generation: { ...defaultGeneration, ...Object.fromEntries(Object.keys(defaultGeneration).map(key => [key, preset.scheme[key] ?? defaultGeneration[key as keyof GenerationSettings]])) } as GenerationSettings,
+        integrations: preset.desktop?.integrations ?? defaultIntegrations,
+        mode: preset.scheme.mode ?? "dark",
+        scheme_type,
+      });
+    } catch (e) { notify(String(e), "error"); return; }
     setWallpaperPath(wallpaper);
     setSchemeType(scheme_type);
     setSchemeData(scheme_data);
@@ -634,14 +713,10 @@ function App() {
         await invoke("apply_theme", { context: themedPresetContext });
       }
       if (desktop.apply_kde_colorscheme) {
-        applyKdeSchemeWithOverrides(themedPresetContext, kdeColorOverrides).catch(e =>
-          console.error("KDE scheme apply failed:", e)
-        );
+        await applyKdeSchemeWithOverrides(themedPresetContext, kdeColorOverrides);
       }
       if (gtkThemeEnabled) {
-        invoke("apply_gtk_theme", { context: themedPresetContext, dark: getEffectiveGtkDark(scheme_data, presetMode) }).catch(e =>
-          console.error("GTK theme apply failed:", e)
-        );
+        await invoke("apply_gtk_theme", { context: themedPresetContext, dark: getEffectiveGtkDark(scheme_data, presetMode) });
       }
       notify(t('messages.presetApplied'), "success");
     } catch (e) {
@@ -1164,6 +1239,7 @@ function App() {
             currentSchemeType={schemeType}
             currentSchemeData={schemeData}
             currentMode={mode}
+            currentSettings={studioSettings}
             onApplyPreset={handleApplyPreset}
           />
         )}
@@ -1173,12 +1249,12 @@ function App() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <h2>{t('colors.title')}</h2>
               <div className="controls-row">
-                <select value={mode} onChange={(e) => handleModeChange(e.target.value as "dark" | "light" | "auto")}>
+                <select disabled={isLoading || !settingsReady} value={mode} onChange={(e) => handleModeChange(e.target.value as "dark" | "light" | "auto")}>
                   <option value="dark">Dark</option>
                   <option value="light">Light</option>
                   <option value="auto">Auto (Wallpaper)</option>
                 </select>
-                <select value={schemeType} onChange={(e) => handleSchemeTypeChange(e.target.value)}>
+                <select disabled={isLoading || !settingsReady} value={schemeType} onChange={(e) => handleSchemeTypeChange(e.target.value)}>
                   <optgroup label="Tinted">
                     <option value="Tinted Smart">Smart</option>
                     <option value="Tinted Content">Content</option>
@@ -1247,6 +1323,8 @@ function App() {
                   <span style={{fontWeight: 'bold'}}>{(schemeData?.source_color_hex || '#xxxxxx').toUpperCase()}</span>
                 </div>
               </div>
+              <AdvancedGeneration settings={studioSettings.generation} candidates={schemeData?.source_candidates ?? []}
+                selectedIndex={schemeData?.seed_index ?? 0} disabled={!settingsReady || isLoading} onChange={handleGenerationChange} />
             </div>
 
             {/* Right Column - Colors */}
@@ -1319,11 +1397,19 @@ function App() {
         )}
 
         {activeTab === 'templates' && (
-          <Templates schemeData={schemeData} />
+          <Templates schemeData={buildThemeContext()} />
         )}
 
         {activeTab === 'desktop' && (
-          <KdeIntegration 
+          <KdeIntegration
+            integrationSettings={studioSettings.integrations}
+            onIntegrationSettingsChange={async integrations => {
+              await persistSettings({ integrations });
+              if (schemeData) {
+                const warnings = await invoke<string[]>("apply_kde_integrations", { context: buildThemeContext() });
+                warnings.forEach(warning => notify(warning, "info"));
+              }
+            }}
             schemeData={buildThemeContext()}
             themeContext={buildThemeContext()}
             wallpaperPath={wallpaperPath}
@@ -1342,7 +1428,7 @@ function App() {
                 await invoke("mark_kde_wallpaper_handled", { wallpaperPath: path }).catch(error =>
                   console.warn("Failed to sync KDE watcher state:", error)
                 );
-                const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+                const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
                 if (schemeGenerationRef.current !== generation) {
                   throw new Error("Color generation was superseded by a newer request.");
                 }

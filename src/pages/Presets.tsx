@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import type { StudioSettings } from "../utils/studioSettings";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
@@ -72,6 +73,7 @@ interface PresetsProps {
   currentSchemeType: string;
   currentSchemeData: any;
   currentMode: string;
+  currentSettings: StudioSettings;
   onApplyPreset: (preset: PresetV2) => Promise<void>;
 }
 
@@ -80,6 +82,7 @@ export default function Presets({
   currentSchemeType,
   currentSchemeData,
   currentMode,
+  currentSettings,
   onApplyPreset,
 }: PresetsProps) {
   const { t } = useTranslation();
@@ -140,12 +143,13 @@ export default function Presets({
           wallpaper_path: currentWallpaper,
           scheme_type: currentSchemeType,
           mode: currentMode,
-          contrast: null,
+          ...(currentSchemeData?.generation_settings ?? currentSettings.generation),
+          seed_index: currentSchemeData?.seed_index ?? currentSettings.generation.seed_index,
           opacity: null,
           source_color_hex: currentSchemeData?.source_color_hex ?? null,
           scheme_data: currentSchemeData,
           custom_colors: [],
-          desktop: null,
+          desktop: { target_de: "KDE", apply_wallpaper: true, apply_kde_colorscheme: true, apply_templates: true, integrations: currentSettings.integrations },
         },
       });
       await loadPresets();
