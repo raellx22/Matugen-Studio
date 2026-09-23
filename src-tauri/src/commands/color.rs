@@ -7,6 +7,7 @@ use matugen_core::{
     scheme::{SchemeTypes, SchemesEnum},
 };
 use serde_json::Value;
+use tauri::Manager;
 
 struct WallpaperAnalysis {
     luminance: f64,
@@ -21,18 +22,25 @@ struct SchemeRequest {
 
 #[tauri::command]
 pub async fn generate_scheme_from_image(
+    app: tauri::AppHandle,
     image_path: String,
     scheme_type: String,
     settings: Option<GenerationSettings>,
 ) -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let preview_path = image_path.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let settings = settings
             .map(Ok)
             .unwrap_or_else(|| super::settings::get_studio_settings().map(|s| s.generation))?;
         generate_scheme_from_image_blocking(image_path, scheme_type, settings)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    // Grant only the successfully decoded image, including gallery/KDE sources.
+    app.asset_protocol_scope()
+        .allow_file(preview_path)
+        .map_err(|e| e.to_string())?;
+    Ok(result)
 }
 
 pub fn generate_scheme_from_image_blocking(

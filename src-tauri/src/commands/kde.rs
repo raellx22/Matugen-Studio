@@ -1184,6 +1184,10 @@ async fn process_wallpaper_change(
             return Err("Wallpaper processing cancelled".into());
         }
         let warnings = super::integrations::apply(&context, &settings.integrations)?;
+        app_for_task
+            .asset_protocol_scope()
+            .allow_file(&wallpaper_for_event)
+            .map_err(|e| e.to_string())?;
         let _ = app_for_task.emit(
             "studio-wallpaper-generated",
             serde_json::json!({"wallpaper": wallpaper_for_event, "context": context}),

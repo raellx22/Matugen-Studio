@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
+use tauri::Manager;
 
 static PRESET_STORAGE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -559,8 +560,22 @@ pub fn save_preset(input: SavePresetInput) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_presets() -> Result<Vec<PresetV2>, String> {
-    load_presets()
+pub fn get_presets(app: tauri::AppHandle) -> Result<Vec<PresetV2>, String> {
+    let presets = load_presets()?;
+    for preset in &presets {
+        if let Some(path) = preset
+            .wallpaper
+            .as_ref()
+            .and_then(|wallpaper| wallpaper.original_path.as_ref())
+        {
+            if image::image_dimensions(path).is_ok() {
+                app.asset_protocol_scope()
+                    .allow_file(path)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(presets)
 }
 
 #[tauri::command]
