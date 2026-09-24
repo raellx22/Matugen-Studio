@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
+import { message } from '@tauri-apps/plugin-dialog';
 import { BookmarkPlus, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, History, Palette, RotateCcw, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
 import { CompactPaginationButton } from './Source';
 import { useSessionState } from '../utils/sessionState';
+import type { ProviderRecord } from '../utils/wallpaperLibrary';
+import Select from '../components/Select';
 
 const NSFW_DISCLAIMER_STORAGE_KEY = 'wallhavenNsfwDisclaimerAcknowledged';
-const HISTORY_STORAGE_KEY = 'wallhavenDownloadHistory';
 const HISTORY_LIMIT = 60;
 const DEFAULT_FILTERS_STORAGE_KEY = 'wallhavenDefaultFilters';
 
@@ -14,6 +16,7 @@ interface WallhavenBrowserProps {
   onApplyAndGenerate: (path: string) => Promise<void>;
   onSelectForColors: (path: string) => void;
   themeColorHex?: string | null;
+  onSaved?: (oldPaths: string[], savedPath: string) => void;
 }
 
 interface WallhavenThumbs {
@@ -62,9 +65,11 @@ interface WallhavenSearchResponse {
 
 interface HistoryEntry {
   id: string;
-  localPath: string;
+  localPath: string | null;
+  active: boolean;
   thumb: string;
   downloadedAt: number;
+  saved: boolean;
 }
 
 type SortingOption = 'date_added' | 'relevance' | 'random' | 'views' | 'favorites' | 'toplist';
@@ -122,14 +127,6 @@ const COLOR_SWATCHES = [
   '000000', '999999', 'cccccc', 'ffffff', '424153',
 ];
 
-const selectStyle: CSSProperties = {
-  padding: '8px 12px',
-  borderRadius: 8,
-  background: 'var(--surface-hover)',
-  border: '1px solid var(--border)',
-  color: 'var(--text-primary)',
-};
-
 const pillStyle: CSSProperties = {
   background: 'var(--surface-hover)',
   border: '1px solid var(--border)',
@@ -175,20 +172,7 @@ function formatFileSize(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function loadHistory(): HistoryEntry[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveHistory(entries: HistoryEntry[]) {
-  localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(entries));
-}
-
-export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors, themeColorHex }: WallhavenBrowserProps) {
+export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors, themeColorHex, onSaved }: WallhavenBrowserProps) {
   const { t } = useTranslation();
   const defaultFilters = useMemo(() => loadDefaultFilters(), []);
   const [query, setQuery] = useSessionState('wallhaven.query', '');
@@ -211,17 +195,10 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
   const [meta, setMeta] = useState<WallhavenMeta | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [downloadState, setDownloadState] = useState<Record<string, DownloadState>>(() => {
-    const map: Record<string, DownloadState> = {};
-    for (const entry of loadHistory()) map[entry.id] = 'done';
-    return map;
-  });
-  const [localPaths, setLocalPaths] = useState<Record<string, string>>(() => {
-    const map: Record<string, string> = {};
-    for (const entry of loadHistory()) map[entry.id] = entry.localPath;
-    return map;
-  });
-  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [downloadState, setDownloadState] = useState<Record<string, DownloadState>>({});
+  const [localPaths, setLocalPaths] = useState<Record<string, string>>({});
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [records, setRecords] = useState<Record<string, ProviderRecord>>({});
   const [showHistory, setShowHistory] = useSessionState('wallhaven.showHistory', false);
   const [filtersOpen, setFiltersOpen] = useSessionState('wallhaven.filtersOpen', true);
   const [hasSavedFilters, setHasSavedFilters] = useState(() => localStorage.getItem(DEFAULT_FILTERS_STORAGE_KEY) !== null);
@@ -381,55 +358,65 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
     }
   };
 
-  const addToHistory = (id: string, localPath: string, thumb: string) => {
-    setHistory((prev) => {
-      const next = [{ id, localPath, thumb, downloadedAt: Date.now() }, ...prev.filter((entry) => entry.id !== id)].slice(0, HISTORY_LIMIT);
-      saveHistory(next);
-      return next;
-    });
+  const refreshRecords = async () => {
+    const entries = await invoke<ProviderRecord[]>('get_provider_wallpapers');
+    const own = entries.filter(record => record.provider === 'wallhaven');
+    const map: Record<string, ProviderRecord> = {};
+    const paths: Record<string, string> = {};
+    const states: Record<string, DownloadState> = {};
+    for (const record of own) {
+      map[record.providerId] = record;
+      const path = record.savedPath ?? record.activePath ?? record.cachePath;
+      if (path) paths[record.providerId] = path;
+      if (record.savedPath) states[record.providerId] = 'done';
+    }
+    setRecords(map); setLocalPaths(paths); setDownloadState(states);
+    setHistory(own.filter(record => !record.hiddenFromHistory && (record.lastUsedAt || record.savedAt)).sort((a,b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0)).slice(0, HISTORY_LIMIT).map(record => ({
+      id: record.providerId, localPath: record.savedPath ?? record.activePath ?? record.cachePath, active: Boolean(record.activePath), thumb: record.thumb ?? '', downloadedAt: record.lastUsedAt ?? 0, saved: Boolean(record.savedPath),
+    })));
+    return map;
   };
-
-  const removeFromHistory = (id: string) => {
-    setHistory((prev) => {
-      const next = prev.filter((entry) => entry.id !== id);
-      saveHistory(next);
-      return next;
-    });
-  };
-
-  const clearHistory = () => {
-    setHistory([]);
-    saveHistory([]);
-  };
-
+  useEffect(() => { void refreshRecords().catch(e => setErrorMsg(String(e))); }, []);
+  const removeFromHistory = async (id: string) => { await invoke('hide_provider_history', { provider: 'wallhaven', id }); await refreshRecords(); };
+  const clearHistory = async () => { await invoke('hide_provider_history', { provider: 'wallhaven', id: null }); await refreshRecords(); };
   const downloadWallpaper = async (item: WallhavenWallpaper): Promise<string | null> => {
-    if (localPaths[item.id]) return localPaths[item.id];
-    setDownloadState((prev) => ({ ...prev, [item.id]: 'downloading' }));
+    setDownloadState(prev => ({ ...prev, [item.id]: 'downloading' }));
     try {
-      const localPath = await invoke<string>('wallhaven_download', { id: item.id, url: item.path });
-      setLocalPaths((prev) => ({ ...prev, [item.id]: localPath }));
-      setDownloadState((prev) => ({ ...prev, [item.id]: 'done' }));
-      addToHistory(item.id, localPath, item.thumbs.small);
-      return localPath;
+      const oldPaths = [records[item.id]?.cachePath, records[item.id]?.activePath].filter((path): path is string => Boolean(path));
+      const savedPath = await invoke<string>('wallhaven_save', { id: item.id, url: item.path, thumb: item.thumbs.small });
+      await refreshRecords();
+      onSaved?.(oldPaths, savedPath);
+      return savedPath;
     } catch (e) {
-      setDownloadState((prev) => ({ ...prev, [item.id]: 'error' }));
-      alert(t('wallhaven.downloadFailed', { error: String(e) }));
+      setDownloadState(prev => ({ ...prev, [item.id]: 'error' }));
+      await message(t('wallhaven.downloadFailed', { error: String(e) }), { title: t('sidebar.source'), kind: 'error' });
       return null;
     }
   };
-
-  const handleApply = async (item: WallhavenWallpaper) => {
-    const localPath = await downloadWallpaper(item);
-    if (localPath) {
-      await onApplyAndGenerate(localPath);
-    }
+  const resolveForUse = async (item: WallhavenWallpaper, apply: boolean): Promise<string | null> => {
+    try {
+      const path = await invoke<string>(apply ? 'wallhaven_prepare_active' : 'wallhaven_prepare_colors', { id: item.id, url: item.path, thumb: item.thumbs.small });
+      await refreshRecords();
+      return path;
+    } catch(e) { await message(t('wallhaven.downloadFailed', { error: String(e) }), { title: t('sidebar.source'), kind: 'error' }); return null; }
   };
-
+  const handleApply = async (item: WallhavenWallpaper) => {
+    const localPath = await resolveForUse(item, true);
+    if (localPath) await onApplyAndGenerate(localPath);
+  };
   const handleSelectForColors = async (item: WallhavenWallpaper) => {
-    const localPath = await downloadWallpaper(item);
-    if (localPath) {
-      onSelectForColors(localPath);
+    const localPath = await resolveForUse(item, false);
+    if (localPath) onSelectForColors(localPath);
+  };
+  const useHistoryItem = async (entry: HistoryEntry, apply: boolean) => {
+    const fresh = await invoke<ProviderRecord[]>('get_provider_wallpapers');
+    const record = fresh.find(record => record.provider === 'wallhaven' && record.providerId === entry.id);
+    let path = apply ? (record?.savedPath ?? record?.activePath) : (record?.savedPath ?? record?.cachePath);
+    if (!path) {
+      try { const item = await invoke<WallhavenWallpaper>('wallhaven_get_wallpaper', { id: entry.id, apiKey: apiKey || undefined }); path = await resolveForUse(item, apply); }
+      catch(e) { await message(String(e), { title: t('sidebar.source'), kind: 'error' }); return; }
     }
+    if (path) { if (apply) await onApplyAndGenerate(path); else onSelectForColors(path); }
   };
 
   const openDetail = async (item: WallhavenWallpaper) => {
@@ -453,8 +440,8 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, minHeight: 0 }}>
-      <div style={{ background: 'var(--surface)', padding: 16, borderRadius: 16, border: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+    <div className="wallhaven-page">
+      <div className="wallhaven-filter-panel">
         <div style={{ display: 'flex', gap: 8 }}>
           <div style={{ position: 'relative', flex: 1 }}>
             <Search size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
@@ -518,34 +505,17 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
           >
             {t('wallhaven.nsfw')}
           </button>
-          <select
-            value={sorting}
-            onChange={(e) => { setSorting(e.target.value as SortingOption); setPage(1); setSeed(null); }}
-            style={selectStyle}
-          >
-            {SORTING_OPTIONS.map((option) => (
-              <option key={option} value={option}>{t(`wallhaven.sorting.${option}`)}</option>
-            ))}
-          </select>
+          <Select label={t('wallhaven.sorting.date_added')} value={sorting}
+            onValueChange={value => { setSorting(value as SortingOption); setPage(1); setSeed(null); }}
+            options={SORTING_OPTIONS.map(option => ({ value: option, label: t(`wallhaven.sorting.${option}`) }))} />
           {sorting === 'toplist' && (
-            <select
-              value={topRange}
-              onChange={(e) => { setTopRange(e.target.value as TopRangeOption); setPage(1); }}
-              style={selectStyle}
-            >
-              {TOP_RANGE_OPTIONS.map((option) => (
-                <option key={option} value={option}>{t(`wallhaven.topRange.${option}`)}</option>
-              ))}
-            </select>
+            <Select label={t('wallhaven.topRange.1M')} value={topRange}
+              onValueChange={value => { setTopRange(value as TopRangeOption); setPage(1); }}
+              options={TOP_RANGE_OPTIONS.map(option => ({ value: option, label: t(`wallhaven.topRange.${option}`) }))} />
           )}
-          <select
-            value={order}
-            onChange={(e) => { setOrder(e.target.value as OrderOption); setPage(1); }}
-            style={selectStyle}
-          >
-            <option value="desc">{t('wallhaven.orderDesc')}</option>
-            <option value="asc">{t('wallhaven.orderAsc')}</option>
-          </select>
+          <Select label={t('wallhaven.orderDesc')} value={order}
+            onValueChange={value => { setOrder(value as OrderOption); setPage(1); }}
+            options={[{ value: 'desc', label: t('wallhaven.orderDesc') }, { value: 'asc', label: t('wallhaven.orderAsc') }]} />
         </div>
 
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -620,58 +590,41 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
         ) : (
           <>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button className="btn btn-secondary btn-compact" onClick={clearHistory}>
+              <button className="btn btn-secondary btn-compact" onClick={() => void clearHistory()}>
                 <Trash2 size={14} /> {t('wallhaven.clearHistory')}
               </button>
             </div>
             <div
               className="wallpaper-grid"
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                gap: 16,
-                overflowY: 'auto',
-                paddingRight: 8,
-                paddingBottom: 24,
-                flex: 1,
-              }}
             >
               {history.map((entry) => (
-                <div key={entry.id} className="template-card" style={{
-                  background: 'var(--surface)',
-                  borderRadius: 16,
-                  border: '1px solid var(--border)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflow: 'hidden',
-                  position: 'relative',
-                  height: 260,
-                }}>
+                <div key={entry.id} className="template-card wallpaper-card">
                   <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, display: 'flex', gap: 8 }}>
                     <button
                       className="btn btn-ghost icon-btn"
                       style={{ padding: 0, background: 'rgba(0,0,0,0.5)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff' }}
-                      onClick={() => removeFromHistory(entry.id)}
+                      onClick={() => void removeFromHistory(entry.id)}
                       title={t('wallhaven.removeFromHistory')}
                     >
                       <X size={18} />
                     </button>
                   </div>
                   <div className="template-thumb" style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
-                    <img className="template-thumb-img" src={entry.thumb} alt={entry.id} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    {entry.thumb && <img className="template-thumb-img" src={entry.thumb} alt={entry.id} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
                   </div>
-                  <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
+                  <div className="wallpaper-card-content">
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{entry.saved ? t('library.saved') : entry.active ? t('library.active') : entry.localPath ? t('library.cached') : t('library.folderMissing')}</span>
                     <button
                       className="btn btn-secondary btn-compact"
                       style={{ width: '100%' }}
-                      onClick={() => onSelectForColors(entry.localPath)}
+                      onClick={() => void useHistoryItem(entry, false)}
                     >
                       {t('source.loadColors')}
                     </button>
                     <button
                       className="btn btn-primary btn-compact"
                       style={{ width: '100%' }}
-                      onClick={() => onApplyAndGenerate(entry.localPath)}
+                      onClick={() => void useHistoryItem(entry, true)}
                     >
                       {t('source.applyAndGenerate')}
                     </button>
@@ -694,32 +647,12 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
           ) : (
             <>
               <div
-                className="wallpaper-grid"
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-                  gap: 16,
-                  overflowY: 'auto',
-                  paddingRight: 8,
-                  paddingBottom: 24,
-                  flex: 1,
-                  opacity: isLoading ? 0.6 : 1,
-                  transition: 'opacity 0.2s ease',
-                }}
+                className="wallpaper-grid" style={{ opacity: isLoading ? 0.6 : 1 }}
               >
                 {results.map((item) => {
                   const state = downloadState[item.id] ?? 'idle';
                   return (
-                    <div key={item.id} className="template-card" style={{
-                      background: 'var(--surface)',
-                      borderRadius: 16,
-                      border: '1px solid var(--border)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      overflow: 'hidden',
-                      position: 'relative',
-                      height: 260,
-                    }}>
+                    <div key={item.id} className="template-card wallpaper-card" title={localPaths[item.id] ?? ''}>
                       <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, display: 'flex', gap: 8 }}>
                         <button
                           className="btn btn-ghost icon-btn"
@@ -740,8 +673,8 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
                           </span>
                         )}
                       </div>
-                      <div
-                        className="template-thumb"
+                      <button type="button"
+                        className="template-thumb wallpaper-detail-trigger"
                         style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111', cursor: 'pointer' }}
                         onClick={() => openDetail(item)}
                         title={t('wallhaven.viewDetails')}
@@ -754,8 +687,8 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
                           decoding="async"
                           style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                         />
-                      </div>
-                      <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
+                      </button>
+                      <div className="wallpaper-card-content">
                         <button
                           className="btn btn-secondary btn-compact"
                           style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}
@@ -765,7 +698,7 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
                           {state === 'downloading' ? (
                             t('wallhaven.downloading')
                           ) : state === 'done' ? (
-                            <><Check size={14} /> {t('wallhaven.downloaded')}</>
+                            <><Check size={14} /> {t('library.saved')}</>
                           ) : (
                             <><Download size={14} /> {t('wallhaven.downloadOnly')}</>
                           )}
@@ -818,7 +751,7 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
 
       {showNsfwModal && (
         <div className="modal-overlay" onClick={() => setShowNsfwModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
+          <div className="modal-content" role="dialog" aria-modal="true" aria-label={t('wallhaven.nsfwDisclaimerTitle')} onClick={(e) => e.stopPropagation()} style={{ maxWidth: 460 }}>
             <h2 style={{ marginTop: 0 }}>{t('wallhaven.nsfwDisclaimerTitle')}</h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: 14, lineHeight: 1.5 }}>
               {t('wallhaven.nsfwDisclaimerBody')}
@@ -837,7 +770,7 @@ export default function WallhavenBrowser({ onApplyAndGenerate, onSelectForColors
 
       {detailItem && (
         <div className="modal-overlay" onClick={() => setDetailItem(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, maxHeight: '85vh', overflowY: 'auto' }}>
+          <div className="modal-content" role="dialog" aria-modal="true" aria-label={detailItem.id} onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, maxHeight: '85vh', overflowY: 'auto' }}>
             <img
               src={detailItem.thumbs.large}
               alt={detailItem.id}

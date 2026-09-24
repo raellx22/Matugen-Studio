@@ -3,6 +3,7 @@ use base64::{engine::general_purpose, Engine as B64Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use tauri::Manager;
@@ -390,6 +391,50 @@ fn validate_imported_filename(value: &str, label: &str) -> Result<String, String
     Ok(file_name.to_string())
 }
 
+fn save_imported_wallpaper(dir: &Path, filename: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = Path::new(filename);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(filename);
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!(".{extension}"))
+        .unwrap_or_default();
+    for index in 0..1000 {
+        let name = if index == 0 {
+            filename.to_string()
+        } else {
+            format!("{stem} ({index}){extension}")
+        };
+        let destination = dir.join(name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+        {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(bytes) {
+                    let _ = fs::remove_file(&destination);
+                    return Err(error.to_string());
+                }
+                return Ok(destination);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if fs::symlink_metadata(&destination)
+                    .is_ok_and(|metadata| metadata.file_type().is_file())
+                    && fs::read(&destination).is_ok_and(|existing| existing == bytes)
+                {
+                    return Ok(destination);
+                }
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("Too many wallpapers with the same filename".into())
+}
+
 // ── Migration ─────────────────────────────────────────────────────────────────
 
 fn migrate_legacy_local_to_v2(old: LegacyLocalPreset) -> PresetV2 {
@@ -705,25 +750,24 @@ pub fn import_preset(file_path: String) -> Result<ImportResult, String> {
                 .clone()
                 .unwrap_or_else(|| "wallpaper.png".to_string());
             let filename = validate_imported_filename(&raw_filename, "wallpaper")?;
-            let dest = wallpapers_dir.join(&filename);
 
             match general_purpose::STANDARD.decode(&b64) {
                 Ok(decoded) => {
-                    if let Err(e) = fs::write(&dest, &decoded) {
-                        warnings.push(format!("Could not save wallpaper: {}", e));
-                    } else {
-                        // Use the shared path when original is missing.
-                        if wp
-                            .original_path
-                            .as_deref()
-                            .map(|p| !PathBuf::from(p).exists())
-                            .unwrap_or(true)
-                        {
-                            wp.original_path = Some(dest.to_string_lossy().to_string());
+                    match save_imported_wallpaper(&wallpapers_dir, &filename, &decoded) {
+                        Ok(saved) => {
+                            if wp
+                                .original_path
+                                .as_deref()
+                                .map(|p| !PathBuf::from(p).exists())
+                                .unwrap_or(true)
+                            {
+                                wp.original_path = Some(saved.to_string_lossy().to_string());
+                            }
                         }
+                        Err(error) => warnings.push(format!("Could not save wallpaper: {error}")),
                     }
                 }
-                Err(e) => warnings.push(format!("Could not decode wallpaper: {}", e)),
+                Err(error) => warnings.push(format!("Could not decode wallpaper: {error}")),
             }
         } else if let Some(orig) = &wp.original_path {
             // No base64 but there is an original_path — check if it still exists.
@@ -795,6 +839,22 @@ mod tests {
         assert_eq!(
             validate_imported_filename("theme.css", "template").unwrap(),
             "theme.css"
+        );
+    }
+
+    #[test]
+    fn imported_wallpaper_collision_preserves_existing_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("wallpaper.png");
+        std::fs::write(&first, b"user wallpaper").unwrap();
+        let saved =
+            super::save_imported_wallpaper(root.path(), "wallpaper.png", b"imported").unwrap();
+        assert_ne!(saved, first);
+        assert_eq!(std::fs::read(&first).unwrap(), b"user wallpaper");
+        assert_eq!(std::fs::read(&saved).unwrap(), b"imported");
+        assert_eq!(
+            super::save_imported_wallpaper(root.path(), "wallpaper.png", b"imported").unwrap(),
+            saved
         );
     }
 }

@@ -10,3 +10,5 @@ pub mod wallhaven;
 pub mod integrations;
 pub mod material;
 pub mod settings;
+
+pub mod wallpaper_library;

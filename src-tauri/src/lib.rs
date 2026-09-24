@@ -59,9 +59,8 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             _ => {}
         });
 
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    tray = tray.icon(icon);
 
     tray.build(app)?;
     Ok(())
@@ -104,7 +103,9 @@ pub fn run() {
             commands::integrations::apply_kde_integrations,
             commands::color::generate_scheme_from_image,
             commands::template::list_bundled_templates,
+            commands::template::list_template_catalog,
             commands::template::list_available_templates,
+            commands::template::detect_heroic_installation,
             commands::template::preview_template,
             commands::template::install_template,
             commands::template::apply_theme,
@@ -113,6 +114,7 @@ pub fn run() {
             commands::template::reset_template_color_override,
             commands::template::apply_template_overrides_to_outputs,
             commands::template::get_installed_templates,
+            commands::template::get_installed_template_entries,
             commands::template::uninstall_template,
             commands::desktop::list_wallpapers,
             commands::desktop::apply_wallpaper,
@@ -140,6 +142,19 @@ pub fn run() {
             commands::kde::set_kde_run_in_background,
             commands::wallhaven::wallhaven_search,
             commands::wallhaven::wallhaven_download,
+            commands::wallhaven::wallhaven_prepare_colors,
+            commands::wallhaven::wallhaven_prepare_active,
+            commands::wallhaven::wallhaven_save,
+            commands::wallpaper_library::get_wallpaper_library,
+            commands::wallpaper_library::initialize_wallpaper_library,
+            commands::wallpaper_library::rescan_wallpaper_library,
+            commands::wallpaper_library::prepare_wallpaper_for_kde,
+            commands::wallpaper_library::add_wallpaper_source,
+            commands::wallpaper_library::remove_wallpaper_source,
+            commands::wallpaper_library::set_wallpaper_source_enabled,
+            commands::wallpaper_library::set_wallpaper_download_root,
+            commands::wallpaper_library::get_provider_wallpapers,
+            commands::wallpaper_library::hide_provider_history,
             commands::wallhaven::wallhaven_validate_key,
             commands::wallhaven::wallhaven_get_wallpaper
         ])

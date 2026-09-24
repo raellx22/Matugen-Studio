@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 import { defaultGeneration, type GenerationSettings } from "../utils/studioSettings";
+import Select from "../components/Select";
 
 interface Props {
   settings: GenerationSettings;
@@ -29,11 +30,10 @@ export default function AdvancedGeneration({ settings, candidates, selectedIndex
     <details className="advanced-panel">
       <summary>{t("advanced.title")}</summary>
       <fieldset disabled={disabled}>
-        <label className="advanced-control">{t("advanced.spec")}
-          <select value={draft.material_spec} onChange={event => setDraft({ ...draft, material_spec: event.target.value as GenerationSettings["material_spec"] })}>
-            <option value="2025">2025</option><option value="2021">2021</option>
-          </select>
-        </label>
+        <div className="advanced-control"><span>{t("advanced.spec")}</span>
+          <Select label={t("advanced.spec")} value={draft.material_spec} onValueChange={value => setDraft({ ...draft, material_spec: value as GenerationSettings["material_spec"] })}
+            options={[{ value: "2025", label: "2025" }, { value: "2021", label: "2021" }]} />
+        </div>
         {([
           ["contrast", -1, 1, 0.05], ["chroma", 0, 10, 0.1], ["tone", 0, 1.5, 0.05],
         ] as const).map(([key, min, max, step]) => <label key={key} className="advanced-control" title={t(`advanced.${key}Help`)}>

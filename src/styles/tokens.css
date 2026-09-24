@@ -1,0 +1,26 @@
+:root {
+  --space-7: 32px;
+  --text-page: 26px;
+  --text-section: 18px;
+  --text-body: 14px;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --line-body: 1.5;
+  --control-sm: 34px;
+  --control-md: 40px;
+  --control-lg: 44px;
+  --motion-fast: 140ms;
+  --motion-normal: 200ms;
+  --motion-slow: 260ms;
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+  --focus-ring: 0 0 0 3px var(--accent-soft);
+  --disabled-opacity: .58;
+  --z-popover: 1500;
+  --z-dialog: 1600;
+  --z-toast: 1700;
+  --surface-workspace: var(--surface-base);
+  --surface-section: var(--surface-solid);
+  --surface-interactive: color-mix(in srgb, var(--surface-solid) 84%, var(--text-primary));
+  --surface-interactive-hover: color-mix(in srgb, var(--surface-solid) 75%, var(--text-primary));
+  --nav-selected: var(--accent-soft);
+}

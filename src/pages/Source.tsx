@@ -1,11 +1,16 @@
 import { useState, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
-import { ChevronLeft, ChevronRight, FolderOpen, Monitor, Palette, Shuffle, Star } from 'lucide-react';
+import { listen } from '@tauri-apps/api/event';
+import type { WallpaperItem, WallpaperLibrary } from '../utils/wallpaperLibrary';
+import { initializeWallpaperLibrary, scanWallpaperLibrary } from '../utils/wallpaperLibrary';
+import WallpaperLibraryControls from './WallpaperLibraryControls';
+import { message, open } from '@tauri-apps/plugin-dialog';
+import { ChevronLeft, ChevronRight, FolderOpen, Image, Monitor, Palette, Shuffle, Star } from 'lucide-react';
 import { getWallpaperPage } from '../utils/wallpaperPagination';
 import { useSessionState } from '../utils/sessionState';
 import WallhavenBrowser from './WallhavenBrowser';
+import Select from '../components/Select';
 
 interface SourceProps {
   itemsPerPage: number;
@@ -105,7 +110,11 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
   const [activeMonitor, setActiveMonitor] = useState(-1);
   const [mainColorMonitor, setMainColorMonitor] = useState(parseInt(localStorage.getItem('mainColorMonitor') || '0'));
 
-  const [wallpapers, setWallpapers] = useState<string[]>([]);
+  const [wallpapers, setWallpapers] = useState<WallpaperItem[]>([]);
+  const [library, setLibrary] = useState<WallpaperLibrary | null>(null);
+  const [filter, setFilter] = useState<'all' | 'downloads' | 'user' | 'kde'>('all');
+  const [showSources, setShowSources] = useState(false);
+  const [scanErrors, setScanErrors] = useState<string[]>([]);
   const [isScanningSource, setIsScanningSource] = useState(false);
   const [isLoadingPage, setIsLoadingPage] = useState(false);
   const [favorites, setFavorites] = useState<string[]>(JSON.parse(localStorage.getItem('favorites') || '[]'));
@@ -119,66 +128,33 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
 
   const getFolderKey = (monitorId: number) => `wallpaperFolder_${monitorId}`;
 
-  const getCurrentFolder = (monitorId: number) => {
-    let folder = localStorage.getItem(getFolderKey(monitorId));
-    if (!folder && monitorId !== -1) {
-      folder = localStorage.getItem(getFolderKey(-1));
-    }
-    return folder;
-  };
-
-  const [currentFolder, setCurrentFolder] = useState<string | null>(getCurrentFolder(-1));
-
   useEffect(() => {
-    invoke<number>('get_monitor_count').then(count => {
-      setMonitorCount(Math.max(1, count));
-    }).catch(e => console.error(e));
+    invoke<number>('get_monitor_count').then(count => setMonitorCount(Math.max(1, count))).catch(e => console.error(e));
   }, []);
 
   const clearPageCache = () => {
-    thumbnailCacheRef.current.clear();
-    setThumbnailPaths({});
-    setThumbnailErrors({});
+    thumbnailCacheRef.current.clear(); setThumbnailPaths({}); setThumbnailErrors({});
   };
-
-  const loadWallpapers = async (folder: string) => {
+  const loadLibrary = async () => {
     const generation = ++scanGenerationRef.current;
     ++pageGenerationRef.current;
-    setIsScanningSource(true);
-    setIsLoadingPage(false);
-    setCurrentPage(1);
-    setWallpapers([]);
-    clearPageCache();
-
+    setIsScanningSource(true); setIsLoadingPage(false); setCurrentPage(1); clearPageCache();
     try {
-      const result: string[] = await invoke('list_wallpapers', { folderPath: folder });
+      const result = await scanWallpaperLibrary();
       if (scanGenerationRef.current === generation) {
-        setWallpapers(result);
+        setWallpapers(result.items);
+        setScanErrors(result.errors.map(error => error.message));
       }
     } catch (e) {
-      console.error("Failed to load wallpapers", e);
-    } finally {
-      if (scanGenerationRef.current === generation) {
-        setIsScanningSource(false);
-      }
-    }
+      if (scanGenerationRef.current === generation) setScanErrors([String(e)]);
+    } finally { if (scanGenerationRef.current === generation) setIsScanningSource(false); }
   };
-
   useEffect(() => {
-    const folder = getCurrentFolder(activeMonitor);
-    setCurrentFolder(folder);
-    if (folder) {
-      loadWallpapers(folder);
-    } else {
-      ++scanGenerationRef.current;
-      ++pageGenerationRef.current;
-      setWallpapers([]);
-      setCurrentPage(1);
-      setIsScanningSource(false);
-      setIsLoadingPage(false);
-      clearPageCache();
-    }
-  }, [activeMonitor]);
+    let mounted = true;
+    void initializeWallpaperLibrary().then(data => { if (mounted) { setLibrary(data); void loadLibrary(); } }).catch(e => setScanErrors([String(e)]));
+    const unlisten = listen('wallpaper-library-changed', () => { void loadLibrary(); });
+    return () => { mounted = false; void unlisten.then(stop => stop()); };
+  }, []);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -190,8 +166,13 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
     [favorites],
   );
 
+  const filteredWallpapers = useMemo(() => wallpapers.filter(item => filter === 'all'
+    || (filter === 'downloads' && (item.sourceKind === 'matugen_downloads' || item.sourceKind === 'download_archive'))
+    || (filter === 'user' && item.sourceKind === 'user_folder')
+    || (filter === 'kde' && ['kde_user', 'kde_system', 'system_backgrounds', 'current_wallpaper'].includes(item.sourceKind))), [wallpapers, filter]);
+  const itemByPath = useMemo(() => new Map(wallpapers.map(item => [item.path, item])), [wallpapers]);
   const sortedWallpapers = useMemo(() => {
-    return [...wallpapers].sort((a, b) => {
+    return filteredWallpapers.map(item => item.path).sort((a, b) => {
       const aFav = favoriteSet.has(a);
       const bFav = favoriteSet.has(b);
       if (aFav && !bFav) return -1;
@@ -201,7 +182,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
       }
       return a.localeCompare(b);
     });
-  }, [wallpapers, favoriteSet, favoriteOrder]);
+  }, [filteredWallpapers, favoriteSet, favoriteOrder]);
 
   const page = useMemo(
     () => getWallpaperPage(sortedWallpapers, currentPage, itemsPerPage),
@@ -324,9 +305,12 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
   const selectFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
     if (selected && typeof selected === 'string') {
-      setCurrentFolder(selected);
-      localStorage.setItem(getFolderKey(activeMonitor), selected);
-      loadWallpapers(selected);
+      try {
+        setLibrary(await invoke<WallpaperLibrary>('add_wallpaper_source', { path: selected }));
+        // Keep legacy per-monitor keys for rollback, while the library is global.
+        localStorage.setItem(getFolderKey(activeMonitor), selected);
+        await loadLibrary();
+      } catch (e) { await message(String(e), { title: t('library.title'), kind: 'error' }); }
     }
   };
 
@@ -341,35 +325,64 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
     localStorage.setItem('favorites', JSON.stringify(newFavs));
   };
 
+  const prepareForKde = async (path: string) => {
+    const stablePath = await invoke<string>('prepare_wallpaper_for_kde', { imagePath: path });
+    if (stablePath !== path && favorites.includes(path)) {
+      const next = Array.from(new Set(favorites.map(favorite => favorite === path ? stablePath : favorite)));
+      setFavorites(next);
+      localStorage.setItem('favorites', JSON.stringify(next));
+    }
+    return stablePath;
+  };
+
   const applyWallpaperOnly = async (path: string) => {
     try {
-      await invoke('apply_wallpaper', { imagePath: path, screenIndex: multiMonitorEnabled ? activeMonitor : -1 });
-      alert("Wallpaper applied successfully in KDE!");
+      const stablePath = await prepareForKde(path);
+      await invoke('apply_wallpaper', { imagePath: stablePath, screenIndex: multiMonitorEnabled ? activeMonitor : -1 });
+      await message(t('source.appliedSuccess'), {
+        title: t('source.title'),
+        kind: 'info',
+      });
     } catch (e) {
-      alert("Failed to apply wallpaper: " + e);
+      await message(t('source.applyError', { error: String(e) }), {
+        title: t('source.title'),
+        kind: 'error',
+      });
     }
   };
 
   const handleApplyAndGenerate = async (path: string) => {
     try {
-      await invoke('apply_wallpaper', { imagePath: path, screenIndex: multiMonitorEnabled ? activeMonitor : -1 });
+      const stablePath = await prepareForKde(path);
+      await invoke('apply_wallpaper', { imagePath: stablePath, screenIndex: multiMonitorEnabled ? activeMonitor : -1 });
 
       if (!multiMonitorEnabled || activeMonitor === -1 || activeMonitor === mainColorMonitor) {
-        await onApplyAndGenerate(path);
+        await onApplyAndGenerate(stablePath);
       } else {
-        alert("Wallpaper applied to monitor! (Colors were not generated because this is not set as your Main Color Monitor).");
+        await message(t('source.appliedToMonitorOnly'), {
+          title: t('source.title'),
+          kind: 'info',
+        });
       }
     } catch (e) {
-      alert("Failed to apply and generate: " + e);
+      await message(t('source.applyAndGenerateError', { error: String(e) }), {
+        title: t('source.title'),
+        kind: 'error',
+      });
     }
   };
 
   const pickRandomFavorite = async () => {
     if (favorites.length === 0) {
-      alert("No favorites added! Please click the star on your wallpapers first.");
+      await message(t('source.noFavoritesWarning'), {
+        title: t('source.shuffleFavorites'),
+        kind: 'warning',
+      });
       return;
     }
-    const randomPath = favorites[Math.floor(Math.random() * favorites.length)];
+    const available = favorites.filter(path => itemByPath.has(path));
+    if (!available.length) { await message(t('library.folderMissing'), { title: t('source.shuffleFavorites'), kind: 'warning' }); return; }
+    const randomPath = available[Math.floor(Math.random() * available.length)];
     await handleApplyAndGenerate(randomPath);
   };
 
@@ -378,14 +391,14 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
   };
 
   return (
-    <div className="source-page" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 20, height: '100%', width: '100%' }}>
+    <div className="source-page page-transition">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h2 style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {t('source.title')}
           </h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: 13, wordBreak: 'break-all' }}>
-            {currentFolder ? currentFolder : t('source.selectFolderSubtitle')}
+            {library ? t('library.sourceCount', { count: library.sources.filter(source => source.enabled).length }) : t('library.loading')}
           </p>
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
@@ -405,7 +418,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div className="page-tabs" role="group" aria-label={t('source.title')}>
         <button
           type="button"
           className={`btn btn-compact ${sourceMode === 'local' ? 'btn-primary' : 'btn-secondary'}`}
@@ -446,19 +459,13 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, borderLeft: '1px solid var(--border)', paddingLeft: 24 }}>
             <span style={{ fontSize: 13, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{t('source.mainColorMonitor')}</span>
-            <select
-              value={mainColorMonitor}
-              onChange={(e) => {
-                const val = parseInt(e.target.value);
+            <Select label={t('source.mainColorMonitor')} value={String(mainColorMonitor)}
+              onValueChange={value => {
+                const val = Number(value);
                 setMainColorMonitor(val);
                 localStorage.setItem('mainColorMonitor', val.toString());
               }}
-              style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-            >
-              {Array.from({ length: monitorCount }).map((_, idx) => (
-                <option key={idx} value={idx}>{t('source.monitorPrefix')} {idx + 1}</option>
-              ))}
-            </select>
+              options={Array.from({ length: monitorCount }).map((_, idx) => ({ value: String(idx), label: `${t('source.monitorPrefix')} ${idx + 1}` }))} />
           </div>
         </div>
       )}
@@ -471,7 +478,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
               {t('source.shuffleFavorites')}
             </button>
           )}
-          {currentFolder && sortedWallpapers.length > 0 && (
+          {sortedWallpapers.length > 0 && (
             <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
               {t('source.wallpapersFound', { count: page.totalItems, perPage: itemsPerPage })}
             </span>
@@ -479,24 +486,19 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
         </div>
         <button className="btn btn-secondary" onClick={selectFolder}>
           <FolderOpen size={18} />
-          {currentFolder ? t('source.changeFolder') : t('source.selectFolder')}
+          {t('library.addFolder')}
         </button>
       </div>
 
-      {!currentFolder ? (
-        <div className="drop-zone" onClick={selectFolder} style={{ cursor: 'pointer', flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', borderRadius: 16, border: '2px dashed var(--border)', background: 'var(--surface)' }}>
-          <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
-            <FolderOpen size={48} color="var(--accent)" />
-            <p style={{ margin: 0, fontSize: 18, color: 'var(--text-secondary)' }}>{t('source.selectFolderFor', { target: activeMonitor === -1 ? t('source.globalAll') : `${t('source.monitorPrefix')} ${activeMonitor + 1}` })}</p>
-            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', opacity: 0.7 }}>{t('source.onlyCurrentPageLoaded')}</p>
-          </div>
-        </div>
-      ) : isScanningSource ? (
+      <div className="library-filters">{(['all', 'downloads', 'user', 'kde'] as const).map(value => <button key={value} className={`btn btn-compact ${filter === value ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setFilter(value); setCurrentPage(1); }}>{t(`library.filter.${value}`)}</button>)}<button className="btn btn-secondary btn-compact" onClick={() => setShowSources(value => !value)}>{t('library.manage')}</button><button className="btn btn-secondary btn-compact" disabled={isScanningSource} onClick={() => void loadLibrary()}>{t('library.rescan')}</button></div>
+      {showSources && <WallpaperLibraryControls onChanged={() => { void invoke<WallpaperLibrary>('get_wallpaper_library').then(setLibrary); void loadLibrary(); }} />}
+      {scanErrors.length > 0 && <div className="library-scan-errors" role="status">{scanErrors.slice(0, 3).map((error, index) => <p key={index}>{error}</p>)}</div>}
+      {isScanningSource ? (
         <div style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <p>{t('source.scanningSource')}</p>
         </div>
       ) : sortedWallpapers.length === 0 ? (
-        <p>{t('source.noWallpapersFound')}</p>
+        <div className="collection-empty"><Image size={30} aria-hidden="true" /><strong>{t('source.noWallpapersFound')}</strong><button className="btn btn-secondary btn-compact" onClick={selectFolder}>{t('library.addFolder')}</button></div>
       ) : (
         <>
           {isLoadingPage && (
@@ -504,31 +506,11 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
               {t('source.loadingThumbnails', { page: page.currentPage })}
             </div>
           )}
-          <div
-            className="wallpaper-grid"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-              gap: 16,
-              overflowY: 'auto',
-              paddingRight: 8,
-              paddingBottom: 24,
-              flex: 1,
-            }}
-          >
+          <div className="wallpaper-grid">
             {page.items.map((path) => {
               const isFav = favoriteSet.has(path);
               return (
-                <div key={path} className="template-card" style={{
-                  background: 'var(--surface)',
-                  borderRadius: 16,
-                  border: '1px solid var(--border)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflow: 'hidden',
-                  position: 'relative',
-                  height: 260,
-                }}>
+                <div key={path} className="template-card wallpaper-card">
                   <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, display: 'flex', gap: 8 }}>
                     <button
                       className="btn btn-ghost icon-btn"
@@ -560,7 +542,8 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
                   <div className="template-thumb" style={{ height: 160, width: '100%', overflow: 'hidden', background: '#111' }}>
                     <Thumbnail thumbnailPath={thumbnailPaths[path] ?? null} hasError={Boolean(thumbnailErrors[path])} />
                   </div>
-                  <div style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8, flex: 1, justifyContent: 'center' }}>
+                  <div className="wallpaper-card-content">
+                    <span className="library-origin">{itemByPath.get(path)?.fileName} · {t(`library.kind.${itemByPath.get(path)?.sourceKind ?? 'user_folder'}`)}</span>
                     <button className="btn btn-secondary btn-compact" style={{ width: '100%' }} onClick={() => applyWallpaperOnly(path)} title="Sets the wallpaper in KDE only">
                       {t('source.applyOnly')}
                     </button>
@@ -603,7 +586,7 @@ export default function Source({ itemsPerPage, onApplyAndGenerate, onSelectForCo
       )}
 
       {sourceMode === 'wallhaven' && (
-        <WallhavenBrowser onApplyAndGenerate={handleApplyAndGenerate} onSelectForColors={onSelectForColors} themeColorHex={themeColorHex} />
+        <WallhavenBrowser onApplyAndGenerate={handleApplyAndGenerate} onSelectForColors={onSelectForColors} themeColorHex={themeColorHex} onSaved={(oldPaths, savedPath) => { if (favorites.some(path => oldPaths.includes(path))) { const next = Array.from(new Set(favorites.map(path => oldPaths.includes(path) ? savedPath : path))); setFavorites(next); localStorage.setItem('favorites', JSON.stringify(next)); } void loadLibrary(); }} />
       )}
 
       <style>

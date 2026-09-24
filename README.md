@@ -3,7 +3,7 @@
 Matugen Studio is a Tauri 2 desktop app for generating Material You palettes
 from wallpapers and applying them to Linux desktop themes.
 
-The first release focuses on KDE Plasma, with support for:
+Matugen Studio 2 focuses on KDE Plasma, with support for:
 
 - wallpaper-driven color generation through `matugen-core`
 - KDE Plasma color schemes
@@ -25,19 +25,35 @@ workflows.
 
 Development assistance for this release was provided with OpenAI Codex.
 
-## Build
+## Linux AppImage
+
+Download the x86_64 AppImage from the [2.0 RC1 release](https://github.com/raellx22/Matugen-Studio/releases/tag/v2.0.0-rc.1), then run:
+
+```bash
+chmod +x Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage
+./Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage
+```
+
+The official AppImage is built in GitHub Actions on Ubuntu 22.04 for broad Linux compatibility. It bundles the application and distributable runtime dependencies, while relying on standard Linux system components and optional host integrations where appropriate. See [release notes](RELEASE_NOTES_2.0.0-rc.1.md). Cross-distribution testing is ongoing.
+
+## Reproduce the Ubuntu 22.04 build
+
+The CI workflow is [release-linux.yml](.github/workflows/release-linux.yml). For a local container build with Docker:
+
+```bash
+./scripts/build-appimage-container.sh
+```
+
+The script puts the AppImage and `SHA256SUMS` in `dist/`. It uses Ubuntu 22.04, Node 22, Rust stable, `npm ci`, and the checked-in lockfiles. Build tools and development headers are not end-user requirements.
+
+## Development build
 
 ```bash
 npm ci
 npm run tauri build -- --bundles appimage
 ```
 
-On rolling distributions where `linuxdeploy` fails while stripping libraries,
-use:
-
-```bash
-NO_STRIP=1 npm run tauri build -- --bundles appimage
-```
+Development AppImages built on a rolling distribution are not release artifacts.
 
 ## License
 
@@ -86,6 +102,20 @@ first change keeps a `.matugen-backup` copy beside the relevant configuration.
 Updates reload Klassy's cache/configuration or only the Rounded Corners effect;
 KWin is never restarted. Turning an integration off stops future synchronization
 and leaves the last applied appearance in place.
+
+## Wallpaper library and app templates
+
+**Wallpapers** groups local sources and Wallhaven with favorites and pagination.
+Remote **Load Colors** uses cache; **Apply and Generate** keeps an unsaved image
+in managed XDG data; **Download** saves it permanently. Removing a source never
+deletes its files. See [Wallpaper Library](docs/wallpaper-library.md).
+
+**Apps** groups templates by application, visual variant and Native/Flatpak
+target. Discord includes Midnight, System24 and an original Material You adapter
+for Vesktop, Vencord, BetterDiscord and Equibop; VS Code has a separate
+color-only fragment for manual merge. Discord's Material CSS imports external
+stylesheets at runtime, so first use needs network access. See
+[Community Templates](docs/community-templates.md) for provenance and setup.
 
 ## Development
 

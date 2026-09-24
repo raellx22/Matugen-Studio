@@ -4,7 +4,7 @@ use matugen_core::util::config::ConfigFile;
 use matugen_core::State;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -36,6 +36,122 @@ pub struct TemplateInfo {
     required_commands: Vec<String>,
     manual_steps: Vec<String>,
     related_files: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateCatalogApp {
+    id: String,
+    name: String,
+    category: String,
+    variants: Vec<TemplateCatalogVariant>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateCatalogVariant {
+    id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    source: TemplateSource,
+    targets: Vec<TemplateTarget>,
+    template: TemplateInfo,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateSource {
+    kind: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    license_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attribution: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateTarget {
+    id: String,
+    label: String,
+    install_type: String,
+    input_path: String,
+    output_path: String,
+    detected: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledTemplateEntry {
+    key: String,
+    input_path: String,
+    output_path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogMetadata {
+    applications: Vec<CatalogMetadataApp>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogMetadataApp {
+    id: String,
+    name: String,
+    category: String,
+    variants: Vec<CatalogMetadataVariant>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogMetadataVariant {
+    id: String,
+    name: String,
+    source_path: String,
+    description: Option<String>,
+    source: Option<CatalogMetadataSource>,
+    automation_level: Option<String>,
+    manual_steps: Option<Vec<String>>,
+    targets: Vec<CatalogMetadataTarget>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogMetadataTarget {
+    id: String,
+    label: String,
+    install_type: String,
+    source_path: Option<String>,
+    output_path: String,
+    detect_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogMetadataSource {
+    kind: String,
+    name: String,
+    repository: Option<String>,
+    author: Option<String>,
+    license: Option<String>,
+    license_status: Option<String>,
+    attribution: Option<String>,
+    upstream_commit: Option<String>,
+    version: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -409,7 +525,25 @@ fn template_metadata(relative_path: &str, file_name: &str, installable: bool) ->
         }
         "heroic.css" => {
             meta.target_app = "Heroic Games Launcher".to_string();
-            meta.automation_level = "manual".to_string();
+            meta.automation_level = "config-patch".to_string();
+            meta.manual_steps = vec![
+                "templates.steps.heroicCustomThemesPath".to_string(),
+                "templates.steps.heroicSelectTheme".to_string(),
+            ];
+        }
+        "foot-colors.ini" => {
+            meta.category = "Terminals".to_string();
+            meta.display_name = "Foot".to_string();
+            meta.target_app = "Foot".to_string();
+            meta.automation_level = "config-patch".to_string();
+            meta.manual_steps = vec!["templates.steps.footIncludeConfig".to_string()];
+        }
+        "ghostwriter.json" => {
+            meta.category = "Editors".to_string();
+            meta.display_name = "Ghostwriter".to_string();
+            meta.target_app = "Ghostwriter".to_string();
+            meta.automation_level = "config-patch".to_string();
+            meta.manual_steps = vec!["templates.steps.ghostwriterSetTheme".to_string()];
         }
         "prismlauncher.json" => {
             meta.display_name = "PrismLauncher".to_string();
@@ -502,9 +636,12 @@ fn default_output_path(file_name: &str) -> Option<&'static str> {
         "btop.theme" => Some("~/.config/btop/themes/matugen.theme"),
         "cava-colors.ini" => Some("~/.config/cava/themes/matugen"),
         "firefox-colors.css" => Some("~/.cache/matugen/firefox/colors.css"),
+        "foot-colors.ini" => Some("~/.config/foot/foot-colors.ini"),
         "ghostty" => Some("~/.config/ghostty/themes/Matugen"),
+        "ghostwriter.json" => Some("~/.local/share/ghostwriter/themes/Matugen.json"),
         "gtk-colors.css" => Some("~/.config/gtk-4.0/colors.css"),
         "helix.toml" => Some("~/.config/helix/themes/matugen.toml"),
+        "heroic.css" => Some("~/.config/heroic/themes/matugen.css"),
         "kitty-colors.conf" => Some("~/.config/kitty/themes/Matugen.conf"),
         "kvantum-colors.kvconfig" => Some("~/.config/Kvantum/matugen/matugen.kvconfig"),
         "kvantum-colors.svg" => Some("~/.config/Kvantum/matugen/matugen.svg"),
@@ -545,6 +682,7 @@ fn default_post_hook(file_name: &str) -> Option<&'static str> {
     match file_name {
         "Matugen.colors" => Some("plasma-apply-colorscheme Matugen"),
         "btop.theme" => Some("pkill -USR2 btop || true"),
+        "foot-colors.ini" => Some("pkill -SIGUSR1 foot || true"),
         "ghostty" => Some("pkill -SIGUSR2 ghostty"),
         "kitty-colors.conf" => Some("kitty +kitten themes --reload-in=all Matugen"),
         "nvim-colors.vim" | "template.lua" => Some("pkill -SIGUSR1 nvim"),
@@ -566,8 +704,14 @@ fn manual_steps(file_name: &str) -> Vec<String> {
         "alacritty.toml" => vec!["templates.steps.alacrittyImport".to_string()],
         "btop.theme" => vec!["templates.steps.btopChooseTheme".to_string()],
         "cava-colors.ini" => vec!["templates.steps.cavaSetTheme".to_string()],
+        "foot-colors.ini" => vec!["templates.steps.footIncludeConfig".to_string()],
         "ghostty" => vec!["templates.steps.ghosttySetTheme".to_string()],
+        "ghostwriter.json" => vec!["templates.steps.ghostwriterSetTheme".to_string()],
         "helix.toml" => vec!["templates.steps.helixSetTheme".to_string()],
+        "heroic.css" => vec![
+            "templates.steps.heroicCustomThemesPath".to_string(),
+            "templates.steps.heroicSelectTheme".to_string(),
+        ],
         "kitty-colors.conf" => vec!["templates.steps.kittyApplyTheme".to_string()],
         "midnight-discord.css" | "system24.css" => {
             vec!["templates.steps.discordActivate".to_string()]
@@ -630,6 +774,334 @@ pub fn list_available_templates(themes_dir: String) -> Result<Vec<TemplateInfo>,
     list_templates_from_themes_dir(PathBuf::from(themes_dir))
 }
 
+struct CatalogPaths {
+    home: PathBuf,
+    config: PathBuf,
+    data: PathBuf,
+    cache: PathBuf,
+    state: PathBuf,
+}
+
+impl CatalogPaths {
+    fn system() -> Result<Self, String> {
+        let home = dirs::home_dir().ok_or("Could not resolve home directory")?;
+        let state = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".local/state"));
+        Ok(Self {
+            home,
+            config: dirs::config_dir().ok_or("Could not resolve config directory")?,
+            data: dirs::data_dir().ok_or("Could not resolve data directory")?,
+            cache: dirs::cache_dir().ok_or("Could not resolve cache directory")?,
+            state,
+        })
+    }
+
+    fn resolve(&self, expression: &str) -> Result<PathBuf, String> {
+        for (prefix, base) in [
+            ("$XDG_CONFIG_HOME/", &self.config),
+            ("$XDG_DATA_HOME/", &self.data),
+            ("$XDG_CACHE_HOME/", &self.cache),
+            ("$XDG_STATE_HOME/", &self.state),
+            ("$HOME/", &self.home),
+            ("~/", &self.home),
+        ] {
+            if let Some(rest) = expression.strip_prefix(prefix) {
+                if rest.is_empty()
+                    || rest.starts_with('/')
+                    || rest
+                        .split('/')
+                        .any(|component| component == ".." || component == ".")
+                {
+                    return Err(format!("Invalid catalog path: {expression}"));
+                }
+                return Ok(base.join(rest));
+            }
+        }
+        Err(format!("Unsupported catalog path: {expression}"))
+    }
+}
+
+fn catalog_slug(value: &str) -> String {
+    let mut slug = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    slug.trim_end_matches('-').to_string()
+}
+
+fn normalized_category<'a>(category: &'a str, app_name: &str) -> &'a str {
+    match app_name {
+        "Discord" | "Telegram" => "Communication",
+        "Spotify" | "OBS Studio" => "Media",
+        "Heroic Games Launcher" | "Steam" | "PrismLauncher" => "Gaming",
+        "Ghostwriter" => "Productivity",
+        "Btop" => "System",
+        _ => match category {
+            "KDE Plasma" => "Desktop",
+            "Terminals" => "Terminals",
+            "Shell Tools" | "Editors" => "Development",
+            "Browsers" => "Browsers",
+            "Apps" => "Utilities",
+            other => other,
+        },
+    }
+}
+
+fn bundled_source(relative_path: &str) -> TemplateSource {
+    TemplateSource {
+        kind: "official".into(),
+        name: "matugen-themes".into(),
+        repository: Some("https://github.com/InioX/matugen-themes".into()),
+        author: None,
+        license: Some("MIT".into()),
+        license_status: Some("repository-declared".into()),
+        source_path: Some(if relative_path.starts_with("websites/") {
+            relative_path.to_string()
+        } else {
+            format!("templates/{relative_path}")
+        }),
+        upstream_commit: None,
+        version: None,
+        attribution: None,
+    }
+}
+
+fn list_template_catalog_from_dir(
+    themes_dir: PathBuf,
+    paths: &CatalogPaths,
+) -> Result<Vec<TemplateCatalogApp>, String> {
+    let templates = list_templates_from_themes_dir(themes_dir)?;
+    let metadata: CatalogMetadata =
+        serde_json::from_str(include_str!("../../resources/matugen-themes/catalog.json"))
+            .map_err(|e| format!("Invalid bundled catalog metadata: {e}"))?;
+    let by_path: HashMap<&str, &TemplateInfo> = templates
+        .iter()
+        .map(|template| (template.relative_path.as_str(), template))
+        .collect();
+    let mut consumed = HashSet::new();
+    let mut catalog: Vec<TemplateCatalogApp> = Vec::new();
+
+    for app in metadata.applications {
+        let mut variants = Vec::new();
+        for variant in app.variants {
+            let Some(template) = by_path.get(variant.source_path.as_str()) else {
+                continue;
+            };
+            let mut targets = Vec::new();
+            for target in variant.targets {
+                let source_path = target
+                    .source_path
+                    .as_deref()
+                    .unwrap_or(&variant.source_path);
+                let Some(input) = by_path.get(source_path) else {
+                    continue;
+                };
+                consumed.insert(source_path.to_string());
+                let output = paths.resolve(&target.output_path)?;
+                let detected = match &target.detect_path {
+                    Some(path) => paths.resolve(path)?.exists(),
+                    None => output.exists(),
+                };
+                targets.push(TemplateTarget {
+                    id: target.id,
+                    label: target.label,
+                    install_type: target.install_type,
+                    input_path: input.path.clone(),
+                    output_path: output.to_string_lossy().into_owned(),
+                    detected,
+                });
+            }
+            if targets.is_empty() {
+                continue;
+            }
+            consumed.insert(variant.source_path.clone());
+            let source = match variant.source {
+                Some(meta) => {
+                    if meta.kind != "official" && meta.kind != "community" {
+                        return Err(format!("Invalid source kind for {}", variant.id));
+                    }
+                    TemplateSource {
+                        kind: meta.kind,
+                        name: meta.name,
+                        repository: meta.repository,
+                        author: meta.author,
+                        license: meta.license,
+                        license_status: meta.license_status,
+                        source_path: Some(format!("templates/{}", variant.source_path)),
+                        upstream_commit: meta.upstream_commit,
+                        version: meta.version,
+                        attribution: meta.attribution,
+                    }
+                }
+                None => bundled_source(&variant.source_path),
+            };
+            let mut template = (*template).clone();
+            template.target_app = app.name.clone();
+            template.category = normalized_category(&app.category, &app.name).into();
+            if let Some(level) = variant.automation_level {
+                if !["auto", "config-patch", "manual"].contains(&level.as_str()) {
+                    return Err(format!("Invalid automation level for {}", variant.id));
+                }
+                template.automation_level = level;
+            }
+            if let Some(steps) = variant.manual_steps {
+                if steps
+                    .iter()
+                    .any(|step| !step.starts_with("templates.steps."))
+                {
+                    return Err(format!("Invalid manual step for {}", variant.id));
+                }
+                template.manual_steps = steps;
+            }
+            variants.push(TemplateCatalogVariant {
+                id: variant.id,
+                name: variant.name,
+                description: variant.description,
+                source,
+                targets,
+                template,
+            });
+        }
+        if !variants.is_empty() {
+            catalog.push(TemplateCatalogApp {
+                id: app.id,
+                category: normalized_category(&app.category, &app.name).into(),
+                name: app.name,
+                variants,
+            });
+        }
+    }
+
+    // Discovery remains authoritative: every bundled file not represented by the
+    // curated groups still appears once, including future upstream additions.
+    for template in &templates {
+        if consumed.contains(&template.relative_path) {
+            continue;
+        }
+        let app_name = &template.target_app;
+        let index = catalog.iter().position(|app| app.name == *app_name);
+        let index = match index {
+            Some(index) => index,
+            None => {
+                catalog.push(TemplateCatalogApp {
+                    id: catalog_slug(app_name),
+                    name: app_name.clone(),
+                    category: normalized_category(&template.category, app_name).into(),
+                    variants: Vec::new(),
+                });
+                catalog.len() - 1
+            }
+        };
+        let output = template
+            .default_output_path
+            .as_deref()
+            .map(|path| resolve_catalog_legacy_path(paths, path))
+            .transpose()?
+            .unwrap_or_else(|| {
+                paths
+                    .cache
+                    .join("matugen/templates")
+                    .join(template.relative_path.replace('/', "-"))
+            });
+        let detected = output.exists();
+        let variant_id = format!(
+            "{}-{}",
+            catalog[index].id,
+            catalog_slug(&template.relative_path)
+        );
+        catalog[index].variants.push(TemplateCatalogVariant {
+            id: variant_id,
+            name: template.display_name.clone(),
+            description: None,
+            source: bundled_source(&template.relative_path),
+            targets: vec![TemplateTarget {
+                id: "default".into(),
+                label: "Default".into(),
+                install_type: if template.installable {
+                    "native"
+                } else {
+                    "manual"
+                }
+                .into(),
+                input_path: template.path.clone(),
+                output_path: output.to_string_lossy().into_owned(),
+                detected,
+            }],
+            template: template.clone(),
+        });
+    }
+    catalog.sort_by(|a, b| a.category.cmp(&b.category).then(a.name.cmp(&b.name)));
+    Ok(catalog)
+}
+
+fn resolve_catalog_legacy_path(paths: &CatalogPaths, path: &str) -> Result<PathBuf, String> {
+    if let Some(rest) = path.strip_prefix("~/.config/") {
+        Ok(paths.config.join(rest))
+    } else if let Some(rest) = path.strip_prefix("~/.local/share/") {
+        Ok(paths.data.join(rest))
+    } else if let Some(rest) = path.strip_prefix("~/.cache/") {
+        Ok(paths.cache.join(rest))
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        Ok(paths.home.join(rest))
+    } else {
+        Ok(PathBuf::from(path))
+    }
+}
+
+#[tauri::command]
+pub fn list_template_catalog(app: tauri::AppHandle) -> Result<Vec<TemplateCatalogApp>, String> {
+    list_template_catalog_from_dir(bundled_themes_dir(&app)?, &CatalogPaths::system()?)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HeroicDetectionResult {
+    pub native_detected: bool,
+    pub flatpak_detected: bool,
+    pub native_path: String,
+    pub flatpak_path: String,
+    pub native_themes_dir: String,
+    pub flatpak_themes_dir: String,
+}
+
+pub fn detect_heroic_installation_in(config_dir: &Path, home_dir: &Path) -> HeroicDetectionResult {
+    let native_config = config_dir.join("heroic");
+    let native_detected = native_config.is_dir();
+    let flatpak_root = home_dir.join(".var/app/com.heroicgameslauncher.hgl");
+    let flatpak_detected = flatpak_root.is_dir();
+
+    let native_themes_dir = if let Ok(stripped) = config_dir.strip_prefix(home_dir) {
+        format!("~/{}/heroic/themes", stripped.display())
+    } else {
+        format!("{}/heroic/themes", config_dir.display())
+    };
+    let native_path = format!("{}/matugen.css", native_themes_dir);
+
+    HeroicDetectionResult {
+        native_detected,
+        flatpak_detected,
+        native_path,
+        flatpak_path: "~/.var/app/com.heroicgameslauncher.hgl/config/heroic/themes/matugen.css"
+            .to_string(),
+        native_themes_dir,
+        flatpak_themes_dir: "~/.var/app/com.heroicgameslauncher.hgl/config/heroic/themes"
+            .to_string(),
+    }
+}
+
+#[tauri::command]
+pub fn detect_heroic_installation() -> Result<HeroicDetectionResult, String> {
+    let config_dir = dirs::config_dir().ok_or("Could not resolve config directory")?;
+    let home_dir = dirs::home_dir().ok_or("Could not resolve home directory")?;
+    Ok(detect_heroic_installation_in(&config_dir, &home_dir))
+}
+
 #[tauri::command]
 pub fn preview_template(
     app: tauri::AppHandle,
@@ -679,59 +1151,165 @@ pub fn install_template(
     output_path: String,
     post_hook: Option<String>,
 ) -> Result<(), String> {
+    if output_path.trim().is_empty() {
+        return Err("Output path cannot be empty for this template".to_string());
+    }
     let _guard = TEMPLATE_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
-    let config_dir = matugen_config_dir()?;
+    install_template_in(
+        &matugen_config_dir()?,
+        &template_path,
+        &template_name,
+        output_path.trim(),
+        post_hook.as_deref(),
+        &CatalogPaths::system()?,
+    )
+}
 
-    let templates_dir = config_dir.join("templates");
-    fs::create_dir_all(&templates_dir).map_err(|e| e.to_string())?;
-    let safe_name = Path::new(&template_name)
+fn safe_template_name(name: &str) -> Result<&str, String> {
+    Path::new(name)
         .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| *name == template_name && !name.contains(".."))
-        .ok_or("Invalid template name")?;
+        .and_then(|file_name| file_name.to_str())
+        .filter(|file_name| *file_name == name && !name.contains("..") && !name.is_empty())
+        .ok_or_else(|| "Invalid template name".to_string())
+}
+
+fn installed_key(name: &str) -> String {
+    if name.contains("__") {
+        name.to_string()
+    } else {
+        sanitize_template_key(name)
+    }
+}
+
+fn template_table(content: &str) -> Result<toml::Value, String> {
+    let document = if content.contains("[config]") {
+        content.to_string()
+    } else {
+        format!("[config]\n{content}")
+    };
+    toml::from_str(&document).map_err(|e| format!("Invalid config.toml: {e}"))
+}
+
+fn portable_output(path: &str, paths: &CatalogPaths) -> Result<String, String> {
+    if path.starts_with("$XDG_") || path.starts_with("$HOME/") || path.starts_with("~/") {
+        Ok(paths.resolve(path)?.to_string_lossy().into_owned())
+    } else {
+        Ok(path.to_string())
+    }
+}
+fn normalized_output(path: &str, config_dir: &Path) -> PathBuf {
+    use std::path::Component;
+    let expanded = expand_tilde(Path::new(path));
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        config_dir.join(expanded)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn install_template_in(
+    config_dir: &Path,
+    template_path: &str,
+    template_name: &str,
+    output_path: &str,
+    post_hook: Option<&str>,
+    paths: &CatalogPaths,
+) -> Result<(), String> {
+    let output_path = portable_output(output_path, paths)?;
+    let safe_name = safe_template_name(template_name)?;
+    let name_key = installed_key(safe_name);
+    let templates_dir = config_dir.join("templates");
     let dest_path = templates_dir.join(safe_name);
-    fs::copy(&template_path, &dest_path).map_err(|e| e.to_string())?;
-
+    let source = Path::new(template_path);
     let config_path = config_dir.join("config.toml");
-    let mut config_content = String::new();
-    if config_path.exists() {
-        config_content = fs::read_to_string(&config_path).unwrap_or_default();
-    }
-
-    if !config_content.contains("[config]") {
-        config_content = "[config]\n".to_string() + &config_content;
-    }
-
-    let name_key = sanitize_template_key(&template_name);
-
-    if config_content.contains(&format!("[templates.{}]", name_key)) {
-        return Err(
-            "Template already installed. Please check your ~/.config/matugen/config.toml"
-                .to_string(),
-        );
-    }
-
-    config_content.push_str(&format!("\n[templates.{}]\n", name_key));
-    config_content.push_str(&format!(
-        "input_path = \"{}\"\n",
-        escape_toml_string(&dest_path.to_string_lossy())
-    ));
-    config_content.push_str(&format!(
-        "output_path = \"{}\"\n",
-        escape_toml_string(&output_path)
-    ));
-
-    if let Some(hook) = post_hook {
-        if !hook.trim().is_empty() {
-            config_content.push_str(&format!(
-                "post_hook = \"{}\"\n",
-                escape_toml_string(hook.trim())
+    let mut config_content = if config_path.exists() {
+        fs::read_to_string(&config_path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+    let parsed = template_table(&config_content)?;
+    let requested_output = normalized_output(&output_path, config_dir);
+    if let Some(entries) = parsed.get("templates").and_then(toml::Value::as_table) {
+        if entries.contains_key(&name_key) {
+            return Err("Template already installed. Please check your matugen config.toml".into());
+        }
+        // A user-authored entry may have several outputs; none can be claimed
+        // by a different installation, even before a file is rendered.
+        let is_same_output = |path: &str| {
+            portable_output(path, paths)
+                .is_ok_and(|resolved| normalized_output(&resolved, config_dir) == requested_output)
+        };
+        if let Some((other, _)) = entries.iter().find(|(other, entry)| {
+            *other != &name_key
+                && entry.get("output_path").is_some_and(|output| match output {
+                    toml::Value::String(path) => is_same_output(path),
+                    toml::Value::Array(values) => values
+                        .iter()
+                        .any(|value| value.as_str().is_some_and(is_same_output)),
+                    _ => false,
+                })
+        }) {
+            return Err(format!(
+                "Output path is already used by installed template '{other}'"
             ));
         }
     }
-
-    atomic_write_text(&config_path, &config_content)?;
-
+    match fs::symlink_metadata(&requested_output) {
+        Ok(_) => {
+            return Err(format!(
+                "Output path already exists and is not managed by this installation: {}",
+                requested_output.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Cannot inspect output path: {error}")),
+    }
+    if source == dest_path {
+        return Err("Managed template input already exists; refusing to overwrite it".into());
+    }
+    match fs::symlink_metadata(&dest_path) {
+        Ok(_) => {
+            return Err("Managed template input already exists; refusing to overwrite it".into())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Cannot inspect managed template input: {error}")),
+    }
+    if !config_content.contains("[config]") {
+        config_content = format!("[config]\n{config_content}");
+    }
+    config_content.push_str(&format!(
+        "\n[templates.\"{}\"]\ninput_path = \"{}\"\noutput_path = \"{}\"\n",
+        escape_toml_string(&name_key),
+        escape_toml_string(&dest_path.to_string_lossy()),
+        escape_toml_string(&requested_output.to_string_lossy()),
+    ));
+    if let Some(hook) = post_hook.filter(|hook| !hook.trim().is_empty()) {
+        config_content.push_str(&format!(
+            "post_hook = \"{}\"\n",
+            escape_toml_string(hook.trim())
+        ));
+    }
+    template_table(&config_content)?;
+    fs::create_dir_all(&templates_dir).map_err(|e| e.to_string())?;
+    if let Err(error) = fs::copy(source, &dest_path) {
+        let _ = fs::remove_file(&dest_path);
+        return Err(error.to_string());
+    }
+    if let Err(error) = atomic_write_text(&config_path, &config_content) {
+        let _ = fs::remove_file(&dest_path);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -758,14 +1336,14 @@ fn atomic_write_text(path: &Path, content: &str) -> Result<(), String> {
     })
 }
 
-fn expand_tilde(path: &PathBuf) -> PathBuf {
+fn expand_tilde(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
-    if s.starts_with("~/") {
+    if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return home.join(&s[2..]);
+            return home.join(rest);
         }
     }
-    path.clone()
+    path.to_path_buf()
 }
 
 fn matugen_config_dir() -> Result<PathBuf, String> {
@@ -1293,7 +1871,7 @@ pub fn apply_theme_blocking(context: serde_json::Value) -> Result<(), String> {
         let result = apply_template_overrides(name, &result, &overrides);
 
         if let Some(matugen_core::template::OutputPath::Single(out_path)) = &template.output_path {
-            let out_abs = expand_tilde(&out_path);
+            let out_abs = expand_tilde(out_path);
 
             if let Some(parent) = out_abs.parent() {
                 fs::create_dir_all(parent).ok();
@@ -1316,64 +1894,122 @@ pub fn apply_theme_blocking(context: serde_json::Value) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_installed_templates() -> Result<Vec<String>, String> {
-    let config_dir = matugen_config_dir()?;
+    get_installed_templates_in(&matugen_config_dir()?)
+}
 
+fn get_installed_templates_in(config_dir: &Path) -> Result<Vec<String>, String> {
     let config_path = config_dir.join("config.toml");
     if !config_path.exists() {
-        return Ok(vec![]);
+        return Ok(Vec::new());
     }
+    let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+    let document = template_table(&content)?;
+    Ok(document
+        .get("templates")
+        .and_then(toml::Value::as_table)
+        .map(|entries| entries.keys().cloned().collect())
+        .unwrap_or_default())
+}
 
-    let config_content = fs::read_to_string(&config_path).unwrap_or_default();
-    let mut installed = Vec::new();
+#[tauri::command]
+pub fn get_installed_template_entries() -> Result<Vec<InstalledTemplateEntry>, String> {
+    get_installed_template_entries_in(&matugen_config_dir()?, &CatalogPaths::system()?)
+}
 
-    for line in config_content.lines() {
-        let line = line.trim();
-        if line.starts_with("[templates.") && line.ends_with(']') {
-            let name_key = &line[11..line.len() - 1];
-            installed.push(name_key.to_string());
-        }
+fn get_installed_template_entries_in(
+    config_dir: &Path,
+    paths: &CatalogPaths,
+) -> Result<Vec<InstalledTemplateEntry>, String> {
+    let config_path = config_dir.join("config.toml");
+    if !config_path.exists() {
+        return Ok(Vec::new());
     }
-
-    Ok(installed)
+    let content = fs::read_to_string(config_path).map_err(|e| e.to_string())?;
+    let document = template_table(&content)?;
+    Ok(document
+        .get("templates")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|entries| entries.iter())
+        .filter_map(|(key, entry)| {
+            let input = entry.get("input_path")?.as_str()?;
+            let output = entry.get("output_path")?.as_str()?;
+            let input = portable_output(input, paths).ok()?;
+            let output = portable_output(output, paths).ok()?;
+            Some(InstalledTemplateEntry {
+                key: key.clone(),
+                input_path: normalized_output(&input, config_dir)
+                    .to_string_lossy()
+                    .into_owned(),
+                output_path: normalized_output(&output, config_dir)
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        })
+        .collect())
 }
 
 #[tauri::command]
 pub fn uninstall_template(template_name: String) -> Result<(), String> {
     let _guard = TEMPLATE_STORAGE_LOCK.lock().map_err(|e| e.to_string())?;
-    let safe_name = Path::new(&template_name)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| *name == template_name && !name.contains(".."))
-        .ok_or("Invalid template name")?;
-    let config_dir = matugen_config_dir()?;
+    uninstall_template_in(&matugen_config_dir()?, &template_name)
+}
 
-    let name_key = sanitize_template_key(safe_name);
-    let dest_path = config_dir.join("templates").join(safe_name);
-
-    if dest_path.exists() {
-        fs::remove_file(&dest_path).ok();
-    }
-
+fn uninstall_template_in(config_dir: &Path, template_name: &str) -> Result<(), String> {
+    let safe_name = safe_template_name(template_name)?;
+    let name_key = installed_key(safe_name);
     let config_path = config_dir.join("config.toml");
-    if config_path.exists() {
-        let config_content = fs::read_to_string(&config_path).unwrap_or_default();
-        let mut new_lines = Vec::new();
-        let mut skip = false;
-
-        for line in config_content.lines() {
-            let t_line = line.trim();
-            if t_line.starts_with("[templates.") {
-                skip = t_line == format!("[templates.{}]", name_key);
-            } else if t_line.starts_with('[') {
-                skip = false;
-            }
-            if !skip {
-                new_lines.push(line);
-            }
-        }
-        atomic_write_text(&config_path, &new_lines.join("\n"))?;
+    if !config_path.exists() {
+        return Ok(());
     }
-
+    let config_content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+    let document = template_table(&config_content)?;
+    let Some(entries) = document.get("templates").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    let Some(entry) = entries.get(&name_key) else {
+        return Ok(());
+    };
+    let owned_input = config_dir.join("templates").join(safe_name);
+    let remove_owned_input = entry
+        .get("input_path")
+        .and_then(toml::Value::as_str)
+        .is_some_and(|path| {
+            normalized_output(path, config_dir)
+                == normalized_output(&owned_input.to_string_lossy(), config_dir)
+                && !entries.iter().any(|(key, other)| {
+                    key != &name_key
+                        && other
+                            .get("input_path")
+                            .and_then(toml::Value::as_str)
+                            .is_some_and(|other_path| {
+                                normalized_output(other_path, config_dir)
+                                    == normalized_output(&owned_input.to_string_lossy(), config_dir)
+                            })
+                })
+        });
+    let quoted = format!("[templates.\"{}\"]", escape_toml_string(&name_key));
+    let bare = format!("[templates.{name_key}]");
+    let mut new_content = String::new();
+    let mut skip = false;
+    let mut found = false;
+    for line in config_content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            skip = trimmed == quoted || trimmed == bare;
+            found |= skip;
+        }
+        if !skip {
+            new_content.push_str(line);
+        }
+    }
+    if !found {
+        return Err("Installed template has no removable config section".into());
+    }
+    atomic_write_text(&config_path, &new_content)?;
+    if remove_owned_input && owned_input.exists() {
+        fs::remove_file(owned_input).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1456,6 +2092,8 @@ mod tests {
         let names: Vec<&str> = templates.iter().map(|t| t.relative_path.as_str()).collect();
         for expected in [
             "aerc",
+            "foot-colors.ini",
+            "ghostwriter.json",
             "system24.css",
             "vscode-colors",
             "vscode-colors.json",
@@ -1509,5 +2147,776 @@ mod tests {
                 );
             }
         }
+    }
+
+    struct TempFixture {
+        path: PathBuf,
+    }
+
+    impl TempFixture {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "matugen_fixture_{}_{}_{}",
+                name,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn test_context() -> serde_json::Value {
+        let path = std::env::temp_dir().join(format!(
+            "template-test-seed-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let image = image::RgbImage::from_fn(112, 112, |x, _| match x / 28 {
+            0 => image::Rgb([220, 50, 40]),
+            1 => image::Rgb([40, 170, 70]),
+            2 => image::Rgb([30, 70, 220]),
+            _ => image::Rgb([240, 170, 30]),
+        });
+        image.save(&path).unwrap();
+        let ctx = crate::commands::color::generate_scheme_from_image_blocking(
+            path.to_string_lossy().to_string(),
+            "Tinted Smart".into(),
+            Default::default(),
+        )
+        .expect("must generate valid test scheme context");
+        let _ = fs::remove_file(&path);
+        ctx
+    }
+
+    #[test]
+    fn heroic_detection_isolated_fixtures() {
+        let fixture = TempFixture::new("heroic_det");
+        let config_dir = fixture.path.join(".config");
+        let home_dir = fixture.path.join("home");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::create_dir_all(&home_dir).unwrap();
+
+        // 1. Neither installed
+        let res = detect_heroic_installation_in(&config_dir, &home_dir);
+        assert!(!res.native_detected);
+        assert!(!res.flatpak_detected);
+        assert_eq!(
+            res.flatpak_path,
+            "~/.var/app/com.heroicgameslauncher.hgl/config/heroic/themes/matugen.css"
+        );
+
+        // 2. Only Native installed
+        let native_dir = config_dir.join("heroic");
+        fs::create_dir_all(&native_dir).unwrap();
+        let res = detect_heroic_installation_in(&config_dir, &home_dir);
+        assert!(res.native_detected);
+        assert!(!res.flatpak_detected);
+
+        // 3. Both installed
+        let flatpak_dir = home_dir.join(".var/app/com.heroicgameslauncher.hgl");
+        fs::create_dir_all(&flatpak_dir).unwrap();
+        let res = detect_heroic_installation_in(&config_dir, &home_dir);
+        assert!(res.native_detected);
+        assert!(res.flatpak_detected);
+
+        // 4. Only Flatpak installed
+        fs::remove_dir_all(&native_dir).unwrap();
+        let res = detect_heroic_installation_in(&config_dir, &home_dir);
+        assert!(!res.native_detected);
+        assert!(res.flatpak_detected);
+    }
+
+    #[test]
+    fn heroic_metadata_has_deterministic_default() {
+        let templates = bundled_templates();
+        let heroic = templates
+            .iter()
+            .find(|t| t.relative_path == "heroic.css")
+            .expect("heroic.css must exist in bundled templates");
+
+        assert_eq!(heroic.target_app, "Heroic Games Launcher");
+        assert_eq!(heroic.category, "Apps");
+        assert_eq!(heroic.automation_level, "config-patch");
+        assert_eq!(
+            heroic.default_output_path.as_deref(),
+            Some("~/.config/heroic/themes/matugen.css")
+        );
+        assert_eq!(
+            heroic.manual_steps,
+            vec![
+                "templates.steps.heroicCustomThemesPath".to_string(),
+                "templates.steps.heroicSelectTheme".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn heroic_template_renders_valid_css_without_raw_tokens() {
+        let templates = bundled_templates();
+        let heroic = templates
+            .iter()
+            .find(|t| t.relative_path == "heroic.css")
+            .unwrap();
+        let source = fs::read_to_string(&heroic.path).unwrap();
+        let rendered = render_template("heroic", source, test_context()).unwrap();
+
+        assert!(
+            !rendered.contains("{{"),
+            "must not have unrendered {{ tokens"
+        );
+        assert!(
+            !rendered.contains("}}"),
+            "must not have unrendered }} tokens"
+        );
+        assert!(rendered.contains("--accent: #"));
+        assert!(rendered.contains("--primary: #"));
+        assert!(rendered.contains("--neutral-06: #"));
+        assert!(rendered.contains("--gamecard-title-color: #"));
+        assert!(rendered.contains("--secondary-button: var(--accent);"));
+    }
+
+    #[test]
+    fn install_template_rejects_empty_output_path() {
+        let err_empty = install_template(
+            "/tmp/some-template".into(),
+            "heroic.css".into(),
+            "".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err_empty.contains("Output path cannot be empty"));
+
+        let err_spaces = install_template(
+            "/tmp/some-template".into(),
+            "heroic.css".into(),
+            "    ".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err_spaces.contains("Output path cannot be empty"));
+    }
+
+    #[test]
+    fn foot_template_metadata_and_rendering() {
+        let templates = bundled_templates();
+        let foot = templates
+            .iter()
+            .find(|t| t.relative_path == "foot-colors.ini")
+            .expect("foot-colors.ini must exist in bundled catalog");
+
+        assert_eq!(foot.category, "Terminals");
+        assert_eq!(foot.target_app, "Foot");
+        assert_eq!(foot.display_name, "Foot");
+        assert_eq!(foot.automation_level, "config-patch");
+        assert_eq!(
+            foot.default_output_path.as_deref(),
+            Some("~/.config/foot/foot-colors.ini")
+        );
+        assert_eq!(
+            foot.default_post_hook.as_deref(),
+            Some("pkill -SIGUSR1 foot || true")
+        );
+        assert_eq!(
+            foot.manual_steps,
+            vec!["templates.steps.footIncludeConfig".to_string()]
+        );
+
+        let source = fs::read_to_string(&foot.path).unwrap();
+        let rendered = render_template("foot", source, test_context()).unwrap();
+        assert!(!rendered.contains("{{"));
+        assert!(!rendered.contains("}}"));
+        assert!(rendered.contains("[colors-dark]"));
+        assert!(rendered.contains("regular0=4c4c4c"));
+        assert!(rendered.contains("foreground="));
+    }
+
+    #[test]
+    fn ghostwriter_template_metadata_and_valid_json() {
+        let templates = bundled_templates();
+        let gw = templates
+            .iter()
+            .find(|t| t.relative_path == "ghostwriter.json")
+            .expect("ghostwriter.json must exist in bundled catalog");
+
+        assert_eq!(gw.category, "Editors");
+        assert_eq!(gw.target_app, "Ghostwriter");
+        assert_eq!(gw.display_name, "Ghostwriter");
+        assert_eq!(gw.automation_level, "config-patch");
+        assert_eq!(
+            gw.default_output_path.as_deref(),
+            Some("~/.local/share/ghostwriter/themes/Matugen.json")
+        );
+        assert_eq!(
+            gw.manual_steps,
+            vec!["templates.steps.ghostwriterSetTheme".to_string()]
+        );
+
+        let source = fs::read_to_string(&gw.path).unwrap();
+        let rendered = render_template("ghostwriter", source, test_context()).unwrap();
+        assert!(!rendered.contains("{{"));
+        assert!(!rendered.contains("}}"));
+
+        let parsed: serde_json::Value = serde_json::from_str(&rendered)
+            .expect("rendered Ghostwriter template must be valid JSON");
+        assert!(parsed["dark"]["accent"].is_string());
+        assert!(parsed["light"]["accent"].is_string());
+        assert!(parsed["dark"]["background"].is_string());
+    }
+
+    #[test]
+    fn kitty_template_renders_without_raw_tokens() {
+        let templates = bundled_templates();
+        let kitty = templates
+            .iter()
+            .find(|t| t.relative_path == "kitty-colors.conf")
+            .expect("kitty-colors.conf must exist");
+        let source = fs::read_to_string(&kitty.path).unwrap();
+        let rendered = render_template("kitty", source, test_context()).unwrap();
+
+        assert!(!rendered.contains("{{"));
+        assert!(!rendered.contains("}}"));
+        assert!(rendered.contains("background            #"));
+        assert!(rendered.contains("color255              #"));
+    }
+
+    #[test]
+    fn yazi_template_has_url_syntax_and_no_stale_name_rules() {
+        let templates = bundled_templates();
+        let yazi = templates
+            .iter()
+            .find(|t| t.relative_path == "yazi-theme.toml")
+            .expect("yazi-theme.toml must exist");
+        let source = fs::read_to_string(&yazi.path).unwrap();
+
+        assert!(source.contains(r#"{ url = "*", is = "orphan""#));
+        assert!(source.contains(r#"{ url = "*", is = "exec""#));
+        assert!(!source.contains(r#"{ name = "*", is = "orphan""#));
+        assert!(!source.contains(r#"{ name = "*", is = "exec""#));
+    }
+
+    #[test]
+    fn youtube_template_has_modern_selectors() {
+        let templates = bundled_templates();
+        let yt = templates
+            .iter()
+            .find(|t| t.relative_path == "websites/youtube.css")
+            .expect("youtube.css must exist");
+        let source = fs::read_to_string(&yt.path).unwrap();
+
+        assert!(source.contains(":root, [dark], [light]"));
+        assert!(source.contains("#background.ytd-masthead"));
+    }
+
+    fn fixture_paths(root: &Path) -> CatalogPaths {
+        CatalogPaths {
+            home: root.join("home"),
+            config: root.join("xdg/config"),
+            data: root.join("xdg/data"),
+            cache: root.join("xdg/cache"),
+            state: root.join("xdg/state"),
+        }
+    }
+
+    #[test]
+    fn catalog_groups_all_bundled_inputs_once_with_distinct_targets() {
+        let fixture = TempFixture::new("catalog");
+        let paths = fixture_paths(&fixture.path);
+        fs::create_dir_all(paths.config.join("heroic")).unwrap();
+        fs::create_dir_all(paths.home.join(".var/app/com.heroicgameslauncher.hgl")).unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/matugen-themes");
+        let catalog = list_template_catalog_from_dir(root, &paths).unwrap();
+        let app_ids: HashSet<_> = catalog.iter().map(|app| &app.id).collect();
+        assert_eq!(app_ids.len(), catalog.len(), "one card per application");
+        let mut inputs = HashSet::new();
+        for app in &catalog {
+            let variants: HashSet<_> = app.variants.iter().map(|variant| &variant.id).collect();
+            assert_eq!(variants.len(), app.variants.len());
+            for variant in &app.variants {
+                let target_ids: HashSet<_> =
+                    variant.targets.iter().map(|target| &target.id).collect();
+                assert_eq!(
+                    target_ids.len(),
+                    variant.targets.len(),
+                    "duplicate targets in {}",
+                    variant.id
+                );
+                if variant.source.kind == "community" {
+                    assert!(variant
+                        .source
+                        .repository
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty()));
+                    assert!(variant
+                        .source
+                        .author
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty()));
+                    assert!(variant
+                        .source
+                        .attribution
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty()));
+                    assert!(variant
+                        .source
+                        .license
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty()));
+                    assert!(variant
+                        .source
+                        .license_status
+                        .as_deref()
+                        .is_some_and(|s| !s.is_empty()));
+                }
+                for target in &variant.targets {
+                    assert!(
+                        !target.output_path.is_empty(),
+                        "empty output for {}",
+                        variant.id
+                    );
+                    assert!(target.input_path.starts_with(
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                            .join("resources/matugen-themes")
+                            .to_string_lossy()
+                            .as_ref()
+                    ));
+                    inputs.insert(target.input_path.as_str());
+                }
+            }
+        }
+        for template in bundled_templates() {
+            assert!(
+                inputs.contains(template.path.as_str()),
+                "missing {}",
+                template.relative_path
+            );
+        }
+        let discord = catalog.iter().find(|app| app.id == "discord").unwrap();
+        assert_eq!(discord.variants.len(), 3);
+        let filenames: HashSet<_> = discord
+            .variants
+            .iter()
+            .map(|variant| variant.targets[0].output_path.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(
+            filenames.len(),
+            3,
+            "variants must never render over one another"
+        );
+        let material = discord
+            .variants
+            .iter()
+            .find(|variant| variant.id == "discord.material")
+            .unwrap();
+        assert_eq!(material.targets.len(), 7);
+        assert_eq!(material.source.kind, "community");
+        assert_eq!(material.source.license.as_deref(), Some("GPL-2.0-or-later"));
+        assert_eq!(material.template.automation_level, "manual");
+        assert_eq!(
+            material.template.manual_steps,
+            vec!["templates.steps.discordActivate"]
+        );
+        let heroic = catalog.iter().find(|app| app.id == "heroic").unwrap();
+        assert_eq!(heroic.variants.len(), 1);
+        assert!(heroic.variants[0]
+            .targets
+            .iter()
+            .all(|target| target.detected));
+        assert_ne!(
+            heroic.variants[0].targets[0].output_path,
+            heroic.variants[0].targets[1].output_path
+        );
+        assert!(heroic.variants[0].targets[0]
+            .output_path
+            .starts_with(paths.config.to_string_lossy().as_ref()));
+        let vscode = catalog.iter().find(|app| app.id == "vscode").unwrap();
+        assert_eq!(vscode.variants.len(), 2);
+        let premium = vscode
+            .variants
+            .iter()
+            .find(|v| v.id == "vscode.material-premium")
+            .unwrap();
+        assert_eq!(premium.targets[0].install_type, "manual");
+        assert_eq!(premium.template.automation_level, "manual");
+        assert_eq!(
+            premium.template.manual_steps,
+            vec!["templates.steps.vscodeMergeColors"]
+        );
+    }
+
+    #[test]
+    fn original_discord_adapter_renders_both_modes_and_real_hsl() {
+        let source = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/matugen-themes/templates/discord-material.css"),
+        )
+        .unwrap();
+        let rendered = render_template("discord_material", source, test_context()).unwrap();
+        assert!(rendered.contains(".theme-dark {"));
+        assert!(rendered.contains(".theme-light {"));
+        assert!(!rendered.contains("{{") && !rendered.contains("}}"));
+        let hsl = Regex::new(r"--accent-hue: [0-9]+(?:\.[0-9]+)?;\s+--accent-saturation: [0-9]+(?:\.[0-9]+)?%;\s+--accent-lightness: [0-9]+(?:\.[0-9]+)?%;").unwrap();
+        assert_eq!(hsl.find_iter(&rendered).count(), 2);
+    }
+
+    #[test]
+    fn install_keys_do_not_overwrite_inputs_or_conflicting_outputs() {
+        let fixture = TempFixture::new("install_keys");
+        let paths = fixture_paths(&fixture.path);
+        let config = fixture.path.join("matugen");
+        let source = fixture.path.join("original.css");
+        let changed = fixture.path.join("changed.css");
+        fs::write(&source, "original").unwrap();
+        fs::write(&changed, "changed").unwrap();
+        let source = source.to_string_lossy();
+        let changed = changed.to_string_lossy();
+        let output = "$XDG_CONFIG_HOME/vesktop/themes/matugen-material.css";
+        let first = "discord.material__vesktop-native";
+        install_template_in(&config, &source, first, output, None, &paths).unwrap();
+        let input = config.join("templates").join(first);
+        let before = fs::read_to_string(config.join("config.toml")).unwrap();
+        assert!(
+            install_template_in(&config, &changed, first, output, None, &paths)
+                .unwrap_err()
+                .contains("already installed")
+        );
+        assert_eq!(fs::read_to_string(&input).unwrap(), "original");
+        assert_eq!(
+            fs::read_to_string(config.join("config.toml")).unwrap(),
+            before
+        );
+        let second = "discord-system24__vesktop-native";
+        assert!(install_template_in(
+            &config,
+            &changed,
+            second,
+            &paths
+                .config
+                .join("vesktop/themes/matugen-material.css")
+                .to_string_lossy(),
+            None,
+            &paths
+        )
+        .unwrap_err()
+        .contains("already used"));
+        assert!(!config.join("templates").join(second).exists());
+        install_template_in(
+            &config,
+            &changed,
+            second,
+            "$XDG_CONFIG_HOME/vesktop/themes/system24.css",
+            None,
+            &paths,
+        )
+        .unwrap();
+        let keys = get_installed_templates_in(&config).unwrap();
+        assert!(keys.contains(&first.to_string()) && keys.contains(&second.to_string()));
+        let parsed: ConfigFile =
+            toml::from_str(&fs::read_to_string(config.join("config.toml")).unwrap()).unwrap();
+        assert!(parsed.templates.contains_key(first) && parsed.templates.contains_key(second));
+        let rendered = paths.config.join("vesktop/themes/system24.css");
+        fs::create_dir_all(rendered.parent().unwrap()).unwrap();
+        fs::write(&rendered, "keep output").unwrap();
+        uninstall_template_in(&config, first).unwrap();
+        assert!(!input.exists());
+        assert!(config.join("templates").join(second).exists());
+        assert_eq!(fs::read_to_string(&rendered).unwrap(), "keep output");
+        assert_eq!(
+            get_installed_templates_in(&config).unwrap(),
+            vec![second.to_string()]
+        );
+    }
+
+    #[test]
+    fn equibop_material_install_and_removal_leave_other_variants_intact() {
+        let fixture = TempFixture::new("equibop_material");
+        let paths = fixture_paths(&fixture.path);
+        let config = fixture.path.join("matugen");
+        let themes = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/matugen-themes");
+        let catalog = list_template_catalog_from_dir(themes, &paths).unwrap();
+        let discord = catalog.iter().find(|app| app.id == "discord").unwrap();
+
+        for variant in &discord.variants {
+            let target = variant
+                .targets
+                .iter()
+                .find(|target| target.id == "equibop-native")
+                .unwrap();
+            let key = format!("{}__{}", variant.id, target.id);
+            install_template_in(
+                &config,
+                &target.input_path,
+                &key,
+                &target.output_path,
+                None,
+                &paths,
+            )
+            .unwrap();
+        }
+        let material = discord
+            .variants
+            .iter()
+            .find(|variant| variant.id == "discord.material")
+            .unwrap();
+        let flatpak = material
+            .targets
+            .iter()
+            .find(|target| target.id == "equibop-flatpak")
+            .unwrap();
+        let flatpak_key = format!("{}__{}", material.id, flatpak.id);
+        install_template_in(
+            &config,
+            &flatpak.input_path,
+            &flatpak_key,
+            &flatpak.output_path,
+            None,
+            &paths,
+        )
+        .unwrap();
+        let material_key = "discord.material__equibop-native";
+        assert_eq!(get_installed_templates_in(&config).unwrap().len(), 4);
+        assert_eq!(
+            get_installed_template_entries_in(&config, &paths)
+                .unwrap()
+                .len(),
+            4
+        );
+
+        uninstall_template_in(&config, material_key).unwrap();
+        let remaining = get_installed_templates_in(&config).unwrap();
+        assert_eq!(remaining.len(), 3);
+        assert!(!remaining.contains(&material_key.to_string()));
+        assert!(remaining.contains(&flatpak_key));
+        assert!(remaining.contains(&"discord-midnight__equibop-native".to_string()));
+        assert!(remaining.contains(&"discord-system24__equibop-native".to_string()));
+        assert!(!config.join("templates").join(material_key).exists());
+        assert!(config.join("templates").join(&flatpak_key).exists());
+    }
+
+    #[test]
+    fn unmanaged_output_is_never_overwritten_by_install() {
+        let fixture = TempFixture::new("unmanaged_output");
+        let paths = fixture_paths(&fixture.path);
+        let config = fixture.path.join("matugen");
+        fs::create_dir_all(&config).unwrap();
+        let config_path = config.join("config.toml");
+        fs::write(&config_path, "[config]\n# user settings\n").unwrap();
+        let source = fixture.path.join("original.css");
+        fs::write(&source, "template").unwrap();
+        let output = paths.config.join("vesktop/themes/matugen-material.css");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::write(&output, "existing user theme").unwrap();
+        let error = install_template_in(
+            &config,
+            &source.to_string_lossy(),
+            "discord.material__vesktop-native",
+            "$XDG_CONFIG_HOME/vesktop/themes/matugen-material.css",
+            None,
+            &paths,
+        )
+        .unwrap_err();
+        assert!(error.contains("already exists"));
+        assert_eq!(fs::read_to_string(&output).unwrap(), "existing user theme");
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            "[config]\n# user settings\n"
+        );
+        assert!(!config
+            .join("templates/discord.material__vesktop-native")
+            .exists());
+        let relative_output = config.join("already.css");
+        fs::write(&relative_output, "user relative output").unwrap();
+        assert!(install_template_in(
+            &config,
+            &source.to_string_lossy(),
+            "other__manual",
+            "already.css",
+            None,
+            &paths,
+        )
+        .unwrap_err()
+        .contains("already exists"));
+        assert_eq!(
+            fs::read_to_string(relative_output).unwrap(),
+            "user relative output"
+        );
+        install_template_in(
+            &config,
+            &source.to_string_lossy(),
+            "safe__manual",
+            "new-theme.css",
+            None,
+            &paths,
+        )
+        .unwrap();
+        let saved = template_table(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(
+            saved["templates"]["safe__manual"]["output_path"].as_str(),
+            Some(config.join("new-theme.css").to_string_lossy().as_ref())
+        );
+        let mut existing_config = fs::read_to_string(&config_path).unwrap();
+        existing_config.push_str(
+            "\n[templates.multi]\ninput_path = \"templates/other.css\"\noutput_path = [\"/tmp/unused-output.css\", \"$XDG_CACHE_HOME/matugen/shared.css\"]\n",
+        );
+        fs::write(&config_path, &existing_config).unwrap();
+        assert!(install_template_in(
+            &config,
+            &source.to_string_lossy(),
+            "other__cache",
+            "$XDG_CACHE_HOME/matugen/shared.css",
+            None,
+            &paths,
+        )
+        .unwrap_err()
+        .contains("already used"));
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), existing_config);
+        assert!(!config.join("templates/other__cache").exists());
+    }
+
+    #[test]
+    fn installed_entries_resolve_legacy_and_pair_target_paths() {
+        let fixture = TempFixture::new("installed_entries");
+        let paths = fixture_paths(&fixture.path);
+        let config = fixture.path.join("matugen");
+        fs::create_dir_all(&config).unwrap();
+        fs::write(
+            config.join("config.toml"),
+            "[config]\n[templates.heroic_css]\ninput_path = \"templates/heroic.css\"\noutput_path = \"~/.var/app/com.heroicgameslauncher.hgl/config/heroic/themes/matugen.css\"\n[templates.vscode_colors_json]\ninput_path = \"templates/vscode-colors.json\"\noutput_path = \"$XDG_CACHE_HOME/matugen/vscode-colors.json\"\n[templates.\"discord.material__vesktop-native\"]\ninput_path = \"templates/discord.material__vesktop-native\"\noutput_path = \"$XDG_CONFIG_HOME/vesktop/themes/matugen-material.css\"\n",
+        ).unwrap();
+        let entries = get_installed_template_entries_in(&config, &paths).unwrap();
+        assert_eq!(entries.len(), 3);
+        let heroic = entries
+            .iter()
+            .find(|entry| entry.key == "heroic_css")
+            .unwrap();
+        assert_eq!(
+            heroic.input_path,
+            config.join("templates/heroic.css").to_string_lossy()
+        );
+        assert_eq!(
+            heroic.output_path,
+            paths
+                .home
+                .join(".var/app/com.heroicgameslauncher.hgl/config/heroic/themes/matugen.css")
+                .to_string_lossy()
+        );
+        let vscode = entries
+            .iter()
+            .find(|entry| entry.key == "vscode_colors_json")
+            .unwrap();
+        assert_eq!(
+            vscode.output_path,
+            paths
+                .cache
+                .join("matugen/vscode-colors.json")
+                .to_string_lossy()
+        );
+        let discord = entries
+            .iter()
+            .find(|entry| entry.key == "discord.material__vesktop-native")
+            .unwrap();
+        assert_eq!(
+            discord.output_path,
+            paths
+                .config
+                .join("vesktop/themes/matugen-material.css")
+                .to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn legacy_uninstall_preserves_shared_or_external_inputs() {
+        let fixture = TempFixture::new("legacy_install");
+        let paths = fixture_paths(&fixture.path);
+        let config = fixture.path.join("matugen");
+        let source = fixture.path.join("legacy.css");
+        fs::write(&source, "legacy").unwrap();
+        install_template_in(
+            &config,
+            &source.to_string_lossy(),
+            "heroic.css",
+            "~/heroic.css",
+            None,
+            &paths,
+        )
+        .unwrap();
+        let shared = config.join("templates/heroic.css");
+        let content = fs::read_to_string(config.join("config.toml")).unwrap();
+        fs::write(config.join("config.toml"), format!("{content}\n[templates.other]\ninput_path = \"{}\"\noutput_path = \"/tmp/other.css\"\n", shared.display())).unwrap();
+        assert!(get_installed_templates_in(&config)
+            .unwrap()
+            .contains(&"heroic_css".to_string()));
+        uninstall_template_in(&config, "heroic.css").unwrap();
+        assert!(shared.exists(), "other entry owns this input too");
+        assert!(get_installed_templates_in(&config)
+            .unwrap()
+            .contains(&"other".to_string()));
+        let content = fs::read_to_string(config.join("config.toml")).unwrap();
+        fs::write(config.join("config.toml"), format!("{content}\n[templates.\"external__manual\"]\ninput_path = \"{}\"\noutput_path = \"/tmp/external.css\"\n", source.display())).unwrap();
+        uninstall_template_in(&config, "external__manual").unwrap();
+        assert!(source.exists(), "external source is not managed input");
+    }
+    #[test]
+    fn portable_xdg_output_is_concrete_and_rejects_escape() {
+        let fixture = TempFixture::new("xdg_paths");
+        let paths = fixture_paths(&fixture.path);
+        for (variable, root) in [
+            ("$XDG_CONFIG_HOME", &paths.config),
+            ("$XDG_DATA_HOME", &paths.data),
+            ("$XDG_CACHE_HOME", &paths.cache),
+            ("$XDG_STATE_HOME", &paths.state),
+        ] {
+            assert_eq!(
+                portable_output(&format!("{variable}/themes/matugen.css"), &paths).unwrap(),
+                root.join("themes/matugen.css").to_string_lossy()
+            );
+            assert!(portable_output(&format!("{variable}/../escape"), &paths).is_err());
+        }
+        let config = fixture.path.join("matugen");
+        let source = fixture.path.join("source.css");
+        fs::write(&source, "palette").unwrap();
+        install_template_in(
+            &config,
+            &source.to_string_lossy(),
+            "portable__cache",
+            "$XDG_CACHE_HOME/app/theme.css",
+            None,
+            &paths,
+        )
+        .unwrap();
+        let document =
+            template_table(&fs::read_to_string(config.join("config.toml")).unwrap()).unwrap();
+        assert_eq!(
+            document["templates"]["portable__cache"]["output_path"].as_str(),
+            Some(paths.cache.join("app/theme.css").to_string_lossy().as_ref())
+        );
+    }
+
+    #[test]
+    fn original_vscode_fragment_is_mergeable_json() {
+        let source = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/matugen-themes/templates/vscode-material-premium.json"),
+        )
+        .unwrap();
+        let rendered = render_template("vscode_material_premium", source, test_context()).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let object = document.as_object().unwrap();
+        assert_eq!(object.len(), 2);
+        assert!(object["workbench.colorCustomizations"].is_object());
+        assert!(object["editor.tokenColorCustomizations"].is_object());
+        assert!(!rendered.contains("{{") && !rendered.contains("}}"));
     }
 }

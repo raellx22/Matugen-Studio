@@ -1,10 +1,8 @@
 use std::collections::VecDeque;
-use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
@@ -235,54 +233,188 @@ pub async fn wallhaven_search(
         .map_err(|e| format!("Falha ao interpretar resposta do Wallhaven: {e}"))
 }
 
+fn validate_wallpaper_identity(id: &str, url: &str) -> Result<String, String> {
+    if id.len() < 3 || id.len() > 40 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err("Invalid Wallhaven ID".into());
+    }
+    let parsed = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("w.wallhaven.cc") {
+        return Err("Wallpaper URL must use the Wallhaven image host".into());
+    }
+    let extension = Path::new(parsed.path())
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or("Missing image extension")?;
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+        return Err("Unsupported image extension".into());
+    }
+    Ok(extension)
+}
+
+async fn fetch_wallpaper(client: &WallhavenClient, url: &str) -> Result<Vec<u8>, String> {
+    client.rate_limiter.acquire().await;
+    let response = client
+        .http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch wallpaper: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Wallhaven returned {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|n| n > 50 * 1024 * 1024)
+    {
+        return Err("Wallpaper exceeds 50 MB".into());
+    }
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() > 50 * 1024 * 1024 {
+        return Err("Wallpaper exceeds 50 MB".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Compatibility command: Apply and Load Colors fetch only into disposable cache.
 #[tauri::command]
 pub async fn wallhaven_download(
     app: tauri::AppHandle,
     client: tauri::State<'_, WallhavenClient>,
     id: String,
     url: String,
+    thumb: Option<String>,
 ) -> Result<String, String> {
-    let cache_dir = dirs::cache_dir()
-        .ok_or("Não foi possível localizar o diretório de cache")?
-        .join("matugen-studio")
-        .join("wallhaven");
-    fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-
-    let extension = Path::new(&url)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .filter(|ext| ext.len() <= 5)
-        .unwrap_or("jpg");
-    let file_path = cache_dir.join(format!("{id}.{extension}"));
-
-    if file_path.exists() {
-        allow_asset_file(&app, &file_path);
-        return Ok(file_path.to_string_lossy().to_string());
+    let extension = validate_wallpaper_identity(&id, &url)?;
+    let cache = super::wallpaper_library::provider_cache_dir("wallhaven")?;
+    if let Some(cached) = super::wallpaper_library::provider_paths("wallhaven", &id)?.cache {
+        let path = std::path::PathBuf::from(cached);
+        super::wallpaper_library::record_provider_path("wallhaven", &id, &path, false, thumb)?;
+        super::wallpaper_library::allow_asset(&app, &path);
+        return Ok(path.to_string_lossy().into_owned());
     }
-
-    client.rate_limiter.acquire().await;
-
-    let response = client
-        .http
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Falha ao baixar wallpaper: {e}"))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("Wallhaven retornou o erro {status} ao baixar"));
+    let candidate = cache.join(format!("{id}.{extension}"));
+    if super::wallpaper_library::valid_image(&candidate) {
+        super::wallpaper_library::record_provider_path("wallhaven", &id, &candidate, false, thumb)?;
+        super::wallpaper_library::allow_asset(&app, &candidate);
+        return Ok(candidate.to_string_lossy().into_owned());
     }
+    let bytes = fetch_wallpaper(&client, &url).await?;
+    let id_for_task = id.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        super::wallpaper_library::save_bytes(&cache, &id_for_task, &extension, &bytes)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    super::wallpaper_library::record_provider_path("wallhaven", &id, &path, false, thumb)?;
+    super::wallpaper_library::allow_asset(&app, &path);
+    Ok(path.to_string_lossy().into_owned())
+}
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Falha ao ler o conteúdo baixado: {e}"))?;
+/// Color generation may use a saved download, but otherwise remains cache-only.
+#[tauri::command]
+pub async fn wallhaven_prepare_colors(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, WallhavenClient>,
+    id: String,
+    url: String,
+    thumb: Option<String>,
+) -> Result<String, String> {
+    validate_wallpaper_identity(&id, &url)?;
+    let paths = super::wallpaper_library::provider_paths("wallhaven", &id)?;
+    if let Some(path) = paths.for_colors() {
+        let path = std::path::PathBuf::from(path);
+        if paths.saved.is_none() {
+            super::wallpaper_library::record_provider_path("wallhaven", &id, &path, false, thumb)?;
+        }
+        super::wallpaper_library::allow_asset(&app, &path);
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    wallhaven_download(app, client, id, url, thumb).await
+}
 
-    fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
+/// The KDE path must survive XDG cache cleanup. It is not a saved download.
+#[tauri::command]
+pub async fn wallhaven_prepare_active(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, WallhavenClient>,
+    id: String,
+    url: String,
+    thumb: Option<String>,
+) -> Result<String, String> {
+    let extension = validate_wallpaper_identity(&id, &url)?;
+    let paths = super::wallpaper_library::provider_paths("wallhaven", &id)?;
+    if let Some(path) = paths.for_apply() {
+        super::wallpaper_library::allow_asset(&app, Path::new(path));
+        return Ok(path.into());
+    }
+    let cache_path = match paths.cache {
+        Some(path) => path,
+        None => wallhaven_download(app.clone(), client, id.clone(), url, thumb.clone()).await?,
+    };
+    let id_for_task = id.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        super::wallpaper_library::promote_managed_active(
+            "wallhaven",
+            &id_for_task,
+            &extension,
+            Path::new(&cache_path),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    super::wallpaper_library::record_managed_active_path("wallhaven", &id, &path, thumb)?;
+    super::wallpaper_library::allow_asset(&app, &path);
+    Ok(path.to_string_lossy().into_owned())
+}
 
-    allow_asset_file(&app, &file_path);
-    Ok(file_path.to_string_lossy().to_string())
+/// Permanent save reuses cached data when present and publishes it to the library.
+#[tauri::command]
+pub async fn wallhaven_save(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, WallhavenClient>,
+    id: String,
+    url: String,
+    thumb: Option<String>,
+) -> Result<String, String> {
+    let extension = validate_wallpaper_identity(&id, &url)?;
+    let paths = super::wallpaper_library::provider_paths("wallhaven", &id)?;
+    if let Some(path) = paths.saved {
+        let path = std::path::PathBuf::from(path);
+        super::wallpaper_library::record_provider_path("wallhaven", &id, &path, true, thumb)?;
+        super::wallpaper_library::allow_asset(&app, &path);
+        return Ok(path.to_string_lossy().into_owned());
+    }
+    let cache_candidate = super::wallpaper_library::provider_cache_dir("wallhaven")?
+        .join(format!("{id}.{extension}"));
+    let source_path = paths
+        .cache
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            super::wallpaper_library::valid_image(&cache_candidate).then_some(cache_candidate)
+        })
+        .or_else(|| paths.active.map(std::path::PathBuf::from));
+    let bytes = if source_path.is_none() {
+        Some(fetch_wallpaper(&client, &url).await?)
+    } else {
+        None
+    };
+    let id_for_task = id.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        super::wallpaper_library::save_cached(
+            "wallhaven",
+            &id_for_task,
+            &extension,
+            source_path.as_deref(),
+            bytes.as_deref(),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    super::wallpaper_library::record_provider_path("wallhaven", &id, &path, true, thumb)?;
+    super::wallpaper_library::allow_asset(&app, &path);
+    super::wallpaper_library::emit_changed(&app);
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,8 +506,4 @@ pub async fn wallhaven_get_wallpaper(
         .await
         .map(|envelope| envelope.data)
         .map_err(|e| format!("Falha ao interpretar resposta do Wallhaven: {e}"))
-}
-
-fn allow_asset_file(app: &tauri::AppHandle, path: &Path) {
-    let _ = app.asset_protocol_scope().allow_file(path);
 }

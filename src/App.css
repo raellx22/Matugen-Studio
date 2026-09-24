@@ -143,6 +143,12 @@ html {
   color: var(--accent);
 }
 
+.sidebar-logo img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
 .sidebar-brand {
   font-size: 14px;
   font-weight: 700;
@@ -847,6 +853,10 @@ textarea::placeholder {
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.2s ease;
+  padding: clamp(12px, 2.5dvh, 24px);
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 @keyframes fadeIn {
@@ -857,14 +867,24 @@ textarea::placeholder {
 .modal-content {
   background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03)), var(--surface-solid);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 32px;
+  padding: clamp(20px, 3dvh, 32px);
   border-radius: var(--radius-xl);
-  width: 360px;
+  width: min(100%, 480px);
+  max-width: min(100%, calc(100dvw - 32px));
+  max-height: min(92dvh, calc(100dvh - 32px));
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 20px;
+  box-sizing: border-box;
   box-shadow: 0 24px 48px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
   animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  margin: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.modal-content:has(.modal-body) {
+  overflow: hidden;
 }
 
 @keyframes slideUp {
@@ -876,6 +896,7 @@ textarea::placeholder {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .modal-header h3 {
@@ -884,6 +905,17 @@ textarea::placeholder {
   text-transform: capitalize;
   font-weight: 500;
   letter-spacing: -0.5px;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
 .color-preview-box {
@@ -948,6 +980,7 @@ textarea::placeholder {
 .modal-actions {
   display: flex;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .modal-actions .btn {
@@ -1232,8 +1265,10 @@ textarea::placeholder {
   }
 
   .modal-content {
-    width: min(92vw, 420px);
-    padding: var(--space-5);
+    width: min(100%, 420px);
+    max-width: min(100%, calc(100dvw - 20px));
+    max-height: min(94dvh, calc(100dvh - 20px));
+    padding: clamp(14px, 2.5dvh, 20px);
   }
 
   .btn {
@@ -1267,3 +1302,16 @@ textarea::placeholder {
 .advanced-generation button:disabled, .decoration-integrations fieldset:disabled { opacity: 0.55; }
 .colors-wallpaper-card { height: auto; min-height: clamp(390px, 42vh, 500px); }
 .colors-wallpaper-card .wallpaper-preview { flex-shrink: 0; }
+
+/* Wallpaper library */
+.library-filters { display: flex; flex-wrap: wrap; gap: 8px; }
+.library-source-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow: auto; }
+.library-source-row, .library-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.library-source-row { border: 1px solid var(--border); background: var(--surface-hover); border-radius: 10px; padding: 9px 12px; }
+.library-source-row label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.library-source-row span { min-width: 0; }
+.library-source-row small { display: block; overflow-wrap: anywhere; color: var(--text-secondary); }
+.library-setting-row p { margin: 4px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; font-size: 12px; }
+.library-origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: 11px; }
+.library-scan-errors { color: var(--danger); font-size: 12px; max-height: 70px; overflow: auto; }
+.library-scan-errors p { margin: 2px 0; }

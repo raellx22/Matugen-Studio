@@ -1,0 +1,28 @@
+{
+    "dark": {
+        "accent": "{{colors.primary.default.hex}}",
+        "background": "{{colors.surface.default.hex}}",
+        "block": "{{colors.secondary.default.hex}}",
+        "cursor": "{{colors.on_surface.default.hex}}",
+        "emphasis": "{{colors.primary.default.hex}}",
+        "error": "{{colors.error.default.hex}}",
+        "foreground": "{{colors.on_surface.default.hex}}",
+        "heading": "{{colors.on_surface.default.hex}}",
+        "link": "{{colors.tertiary.default.hex}}",
+        "markup": "{{colors.on_primary.default.hex}}",
+        "selection": "{{colors.on_secondary.default.hex}}"
+    },
+    "light": {
+        "accent": "{{colors.primary.default.hex}}",
+        "background": "{{colors.surface.default.hex}}",
+        "block": "{{colors.secondary.default.hex}}",
+        "cursor": "{{colors.on_surface.default.hex}}",
+        "emphasis": "{{colors.primary.default.hex}}",
+        "error": "{{colors.error.default.hex}}",
+        "foreground": "{{colors.on_surface.default.hex}}",
+        "heading": "{{colors.on_surface.default.hex}}",
+        "link": "{{colors.tertiary.default.hex}}",
+        "markup": "{{colors.on_primary.default.hex}}",
+        "selection": "{{colors.on_secondary.default.hex}}"
+    }
+}
