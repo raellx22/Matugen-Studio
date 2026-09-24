@@ -45,6 +45,7 @@ The CI workflow is [release-linux.yml](.github/workflows/release-linux.yml). For
 ```
 
 The script puts the AppImage and `SHA256SUMS` in `dist/`. It uses Ubuntu 22.04, Node 22, Rust stable, `npm ci`, and the checked-in lockfiles. Build tools and development headers are not end-user requirements.
+The bundle leaves Wayland/XCB display-client libraries to the host so newer Mesa/EGL stacks can work with the Ubuntu-built WebKitGTK runtime.
 
 ## Development build
 

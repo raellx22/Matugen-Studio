@@ -51,6 +51,15 @@ jobs:
       - name: Build Ubuntu 22.04 AppImage
         run: npm run tauri build -- --bundles appimage
 
+      - name: Keep display-client libraries on the host
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          test "${#images[@]}" -eq 1
+          bash scripts/prepare-appimage.sh "${images[0]}"
+
       - name: Normalize artifact name and checksum
         shell: bash
         run: |
