@@ -2,6 +2,7 @@
 set -euo pipefail
 
 appimage="$(realpath "${1:?usage: audit-appimage.sh AppImage}")"
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 file "$appimage"
 sha256sum "$appimage"
 workdir="$(mktemp -d)"
@@ -19,6 +20,20 @@ test -n "$(find "$appdir" -type f -name 'catalog.json' -print -quit)"
 test -n "$(find "$appdir" -type f -name 'discord-material.css' -print -quit)"
 test -n "$(find "$appdir" -type f -name 'tray.png' -print -quit)"
 test -n "$(find "$appdir" -type f -name '*.png' -print -quit)"
+test -f "$appdir/usr/share/metainfo/io.github.raellx22.matugenstudio.metainfo.xml"
+cmp "$project_root/src-tauri/icons/32x32.png" \
+  "$appdir/usr/share/icons/hicolor/32x32/apps/matugen-studio.png"
+cmp "$project_root/src-tauri/icons/tray.png" \
+  "$appdir/usr/lib/Matugen Studio/icons/tray.png"
+grep -a -q '/matugen-studio.png' "$appdir/usr/bin/matugen-studio"
+for library in \
+  libwayland-client.so.0 libwayland-cursor.so.0 \
+  libwayland-egl.so.1 libwayland-server.so.0 \
+  libxkbcommon.so.0 libxcb-randr.so.0 \
+  libxcb-render.so.0 libxcb-shm.so.0 \
+  libXau.so.6 libXdmcp.so.6; do
+  test ! -e "$appdir/usr/lib/$library"
+done
 
 echo "Desktop entry: $desktop_file"
 grep '^Icon=' "$desktop_file"

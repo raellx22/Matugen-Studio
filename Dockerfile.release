@@ -29,6 +29,7 @@ RUN npm run build && npm test \
     && cargo test --locked --manifest-path src-tauri/Cargo.toml \
     && cargo test --locked --manifest-path matugen-core/Cargo.toml
 RUN npm run tauri build -- --bundles appimage
+RUN bash scripts/prepare-appimage.sh "$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
 RUN mkdir -p /release \
     && cp src-tauri/target/release/bundle/appimage/*.AppImage /release/Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage \
     && cd /release && sha256sum *.AppImage > SHA256SUMS
