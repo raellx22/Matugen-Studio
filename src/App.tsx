@@ -8,8 +8,15 @@ import ShadeSlider from '@uiw/react-color-shade-slider';
 import { hsvaToHex, hexToHsva, hexToRgba } from '@uiw/color-convert';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { listen } from "@tauri-apps/api/event";
+import Select from "./components/Select";
+import { PageHeader, Section, SettingRow } from "./components/Primitives";
+import AdvancedGeneration from "./pages/AdvancedGeneration";
+import { defaultGeneration, defaultIntegrations, defaultStudioSettings, type GenerationSettings, type StudioSettings } from "./utils/studioSettings";
 import Templates from "./pages/Templates";
 import Source from "./pages/Source";
+import WallpaperLibraryControls from "./pages/WallpaperLibraryControls";
+import { initializeWallpaperLibrary } from "./utils/wallpaperLibrary";
 import Presets from "./pages/Presets";
 import KdeIntegration from "./pages/KdeIntegration";
 import { applyAppTheme, buildAppTheme, persistAppTheme } from "./utils/appTheme";
@@ -19,6 +26,7 @@ import {
   validateWallpapersPerPage,
 } from "./utils/wallpaperPagination";
 import "./App.css";
+import "./styles/v2.css";
 
 const WALLPAPERS_PER_PAGE_STORAGE_KEY = "wallpapersPerPage";
 const KDE_COLOR_OVERRIDES_STORAGE_KEY = "kdeColorOverrides";
@@ -42,6 +50,9 @@ interface SchemeData {
   wallpaper_luminance?: number;
   source_color_luminance?: number;
   source_color_hex?: string;
+  source_candidates?: { index: number; hex: string }[];
+  seed_index?: number;
+  generation_settings?: GenerationSettings;
   [key: string]: unknown;
 }
 
@@ -114,6 +125,7 @@ interface ToastMessage {
 
 function App() {
   const { t, i18n } = useTranslation();
+  useEffect(() => { void initializeWallpaperLibrary().catch(error => console.error('Wallpaper library initialization failed:', error)); }, []);
   const [activeTab, setActiveTab] = useState("colors");
   const [wallpaperPath, setWallpaperPath] = useState<string | null>(null);
   const [schemeData, setSchemeData] = useState<SchemeData | null>(null);
@@ -123,6 +135,48 @@ function App() {
   const [mode, setMode] = useState<"dark" | "light" | "auto">("auto");
 
   const schemeGenerationRef = useRef(0);
+  const [studioSettings, setStudioSettings] = useState<StudioSettings>(defaultStudioSettings);
+  const studioSettingsRef = useRef(defaultStudioSettings);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const settingsQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const persistSettings = (patch: Partial<StudioSettings>): Promise<StudioSettings> => {
+    const next = settingsQueue.current.catch(() => undefined).then(async () => {
+      const saved = await invoke<StudioSettings>("set_studio_settings", { settings: { ...studioSettingsRef.current, ...patch } });
+      studioSettingsRef.current = saved;
+      setStudioSettings(saved);
+      return saved;
+    });
+    settingsQueue.current = next;
+    return next;
+  };
+  useEffect(() => {
+    let cancelled = false;
+    invoke<StudioSettings>("get_studio_settings").then(async settings => {
+      if (cancelled) return;
+      // Migrate the existing frontend-only overrides and GTK preference once.
+      if (settings.gtk_enabled === null) {
+        const service = await invoke<{ gtk_enabled: boolean }>("get_kde_service_status");
+        const migratedGtkEnabled = localStorage.getItem(GTK_THEME_ENABLED_STORAGE_KEY) === null ? service.gtk_enabled : gtkThemeEnabled;
+        settings = await invoke<StudioSettings>("set_studio_settings", { settings: { ...settings, kde_overrides: kdeColorOverrides, gtk_enabled: migratedGtkEnabled } });
+      }
+      if (cancelled) return;
+      studioSettingsRef.current = settings;
+      setStudioSettings(settings);
+      setMode(settings.mode);
+      setSchemeType(settings.scheme_type);
+      setKdeColorOverrides(settings.kde_overrides);
+      setGtkThemeEnabled(settings.gtk_enabled ?? false);
+      setSettingsReady(true);
+    }).catch(e => notify("Failed to load color settings: " + e, "error"));
+    const subscription = listen<{ wallpaper: string; context: SchemeData }>("studio-wallpaper-generated", event => {
+      ++schemeGenerationRef.current;
+      setWallpaperPath(event.payload.wallpaper);
+      setSchemeData(event.payload.context);
+      setIsLoading(false);
+    });
+    return () => { cancelled = true; void subscription.then(dispose => dispose()); };
+  }, []);
+
 
   const effectiveMode = useMemo(() => {
     if (mode === "dark") return "dark";
@@ -306,6 +360,8 @@ function App() {
   ) => {
     if (!baseContext) return;
     await invoke("apply_kde_colorscheme", { context: baseContext });
+    const warnings = await invoke<string[]>("apply_kde_integrations", { context: baseContext });
+    warnings.forEach(warning => notify(warning, "info"));
     const overrideValues = KDE_COLOR_CONTROLS
       .map(control => ({ key: control.key, hex: normalizeHex(overrides[control.key]) }))
       .filter((entry): entry is { key: string; hex: string } => Boolean(entry.hex));
@@ -317,6 +373,7 @@ function App() {
   const saveKdeColorOverrides = (next: Record<string, string>) => {
     setKdeColorOverrides(next);
     localStorage.setItem(KDE_COLOR_OVERRIDES_STORAGE_KEY, JSON.stringify(next));
+    void persistSettings({ kde_overrides: next }).catch(e => notify(String(e), "error"));
   };
 
   const getKdeControlColor = (control: KdeColorControl, overrides: Record<string, string> = kdeColorOverrides, data: any = schemeData) => {
@@ -326,6 +383,7 @@ function App() {
   const persistGtkThemeEnabled = (enabled: boolean) => {
     setGtkThemeEnabled(enabled);
     localStorage.setItem(GTK_THEME_ENABLED_STORAGE_KEY, String(enabled));
+    void persistSettings({ gtk_enabled: enabled }).catch(e => notify(String(e), "error"));
   };
 
   const persistGtkThemeDark = (dark: boolean) => {
@@ -372,6 +430,7 @@ function App() {
   };
 
   const handleModeChange = async (nextMode: "dark" | "light" | "auto") => {
+    try { await persistSettings({ mode: nextMode }); } catch (e) { notify(String(e), "error"); return; }
     setMode(nextMode);
     if (!schemeData) return;
 
@@ -405,9 +464,8 @@ function App() {
         setWallpaperPath(path);
         setIsLoading(true);
 
-        const data = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+        const data = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
         if (schemeGenerationRef.current !== generation) return;
-        console.log("Data received:", data);
         setSchemeData(data);
         setErrorMsg(null);
       }
@@ -437,11 +495,12 @@ function App() {
 
   const handleSchemeTypeChange = async (newType: string) => {
     const generation = ++schemeGenerationRef.current;
+    try { await persistSettings({ scheme_type: newType }); } catch (e) { notify(String(e), "error"); return; }
     setSchemeType(newType);
     if (wallpaperPath) {
       try {
         setIsLoading(true);
-        const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: wallpaperPath, schemeType: newType });
+        const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: wallpaperPath, schemeType: newType, settings: studioSettingsRef.current.generation });
         if (schemeGenerationRef.current !== generation) return;
         const data = fixMatugenColors(rawData);
         setSchemeData(data);
@@ -459,6 +518,23 @@ function App() {
     }
   };
 
+  const handleGenerationChange = async (generation: GenerationSettings) => {
+    if (!settingsReady || isLoading) return;
+    const request = ++schemeGenerationRef.current;
+    setIsLoading(true);
+    try {
+      await persistSettings({ generation });
+      if (wallpaperPath) {
+        const data = fixMatugenColors(await invoke<SchemeData>("generate_scheme_from_image", { imagePath: wallpaperPath, schemeType, settings: generation }));
+        if (request !== schemeGenerationRef.current) return;
+        setSchemeData(data);
+        await applyGeneratedThemeContext(data);
+      }
+      setErrorMsg(null);
+    } catch (e) { setErrorMsg(String(e)); notify(String(e), "error"); }
+    finally { if (request === schemeGenerationRef.current) setIsLoading(false); }
+  };
+
   const handleApplyAndGenerate = async (path: string) => {
     const generation = ++schemeGenerationRef.current;
     setWallpaperPath(path);
@@ -467,7 +543,7 @@ function App() {
       await invoke("mark_kde_wallpaper_handled", { wallpaperPath: path }).catch(e =>
         console.warn("Failed to sync KDE watcher state:", e)
       );
-      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
       if (schemeGenerationRef.current !== generation) return;
       const data = fixMatugenColors(rawData);
       setSchemeData(data);
@@ -490,7 +566,7 @@ function App() {
     setActiveTab('colors');
     try {
       setIsLoading(true);
-      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+      const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
       if (schemeGenerationRef.current !== generation) return;
       const data = fixMatugenColors(rawData);
       setSchemeData(data);
@@ -617,6 +693,15 @@ function App() {
     const scheme_data = preset.scheme.scheme_data;
     const scheme_type = preset.scheme.scheme_type;
 
+    ++schemeGenerationRef.current;
+    try {
+      await persistSettings({
+        generation: { ...defaultGeneration, ...Object.fromEntries(Object.keys(defaultGeneration).map(key => [key, preset.scheme[key] ?? defaultGeneration[key as keyof GenerationSettings]])) } as GenerationSettings,
+        integrations: preset.desktop?.integrations ?? defaultIntegrations,
+        mode: preset.scheme.mode ?? "dark",
+        scheme_type,
+      });
+    } catch (e) { notify(String(e), "error"); return; }
     setWallpaperPath(wallpaper);
     setSchemeType(scheme_type);
     setSchemeData(scheme_data);
@@ -628,20 +713,18 @@ function App() {
 
     try {
       if (wallpaper && desktop.apply_wallpaper) {
-        await invoke("apply_wallpaper", { imagePath: wallpaper, screenIndex: -1 });
+        const stableWallpaper = await invoke<string>("prepare_wallpaper_for_kde", { imagePath: wallpaper });
+        await invoke("apply_wallpaper", { imagePath: stableWallpaper, screenIndex: -1 });
+        setWallpaperPath(stableWallpaper);
       }
       if (desktop.apply_templates) {
         await invoke("apply_theme", { context: themedPresetContext });
       }
       if (desktop.apply_kde_colorscheme) {
-        applyKdeSchemeWithOverrides(themedPresetContext, kdeColorOverrides).catch(e =>
-          console.error("KDE scheme apply failed:", e)
-        );
+        await applyKdeSchemeWithOverrides(themedPresetContext, kdeColorOverrides);
       }
       if (gtkThemeEnabled) {
-        invoke("apply_gtk_theme", { context: themedPresetContext, dark: getEffectiveGtkDark(scheme_data, presetMode) }).catch(e =>
-          console.error("GTK theme apply failed:", e)
-        );
+        await invoke("apply_gtk_theme", { context: themedPresetContext, dark: getEffectiveGtkDark(scheme_data, presetMode) });
       }
       notify(t('messages.presetApplied'), "success");
     } catch (e) {
@@ -672,10 +755,11 @@ function App() {
     const textColor = isLightColor(hex) ? '#000000' : '#ffffff';
 
     return (
-      <div 
+      <button type="button"
         className={`color-swatch ${isLarge ? 'large' : ''}`} 
         style={{ backgroundColor: hex, color: textColor }}
-        title={name}
+        title={`${name}: ${hex.toUpperCase()}`}
+        aria-label={`${name}: ${hex.toUpperCase()}`}
         onClick={() => { 
           setSelectedColor({name, path, hex, originalHex: hex, scope: "matugen"});
           setPickerHsva(hexToHsva(hex));
@@ -684,7 +768,7 @@ function App() {
       >
         <span style={{opacity: 0.7}}>{name}</span>
         <span style={{fontWeight: 'bold'}}>{hex.toUpperCase()}</span>
-      </div>
+      </button>
     );
   };
 
@@ -778,13 +862,8 @@ function App() {
         ) : (
           <>
             <div className="template-colors-toolbar">
-              <select value={activeTemplateGroup} onChange={(e) => setActiveTemplateGroup(e.target.value)}>
-                {templateColorGroups.map(group => (
-                  <option key={group.templateName} value={group.templateName}>
-                    {group.displayName} · {group.controls.length}
-                  </option>
-                ))}
-              </select>
+              <Select label="Template" value={activeTemplateGroup} onValueChange={setActiveTemplateGroup}
+                options={templateColorGroups.map(group => ({ value: group.templateName, label: `${group.displayName} · ${group.controls.length}` }))} />
               {selectedTemplateGroup && (
                 <button
                   type="button"
@@ -953,7 +1032,7 @@ function App() {
 
       {selectedColor && (
         <div className="modal-overlay" onClick={() => { setSelectedColor(null); setShowPicker(false); }}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div className="modal-content" role="dialog" aria-modal="true" aria-label={selectedColor.name} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <h3>{selectedColor.name.replace('-', ' ')}</h3>
@@ -968,7 +1047,7 @@ function App() {
                   </p>
                 )}
               </div>
-              <X size={20} cursor="pointer" onClick={() => { setSelectedColor(null); setShowPicker(false); }} />
+              <button type="button" className="btn btn-ghost icon-btn" aria-label="Close" onClick={() => { setSelectedColor(null); setShowPicker(false); }}><X size={20} /></button>
             </div>
 
             <div className="color-preview-box">
@@ -1074,7 +1153,7 @@ function App() {
       <aside className={`sidebar ${sidebarExpanded ? 'expanded' : ''}`}>
         <div className="sidebar-header">
           <div className="sidebar-logo">
-            <Palette size={26} />
+            <img src="/matugen-studio.png" alt="" width={28} height={28} />
           </div>
           <span className="sidebar-brand">Matugen Studio</span>
         </div>
@@ -1087,32 +1166,31 @@ function App() {
           {sidebarExpanded ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
         </button>
         <nav className="sidebar-nav">
-          <div className={`sidebar-item ${activeTab === 'source' ? 'active' : ''}`} onClick={() => setActiveTab('source')} title={t('sidebar.source')}>
+          <button type="button" className={`sidebar-item ${activeTab === 'source' ? 'active' : ''}`} onClick={() => setActiveTab('source')} title={t('sidebar.source')} aria-current={activeTab === 'source' ? 'page' : undefined}>
             <Image size={22} />
             <span>{t('sidebar.source')}</span>
-          </div>
-          <div className={`sidebar-item ${activeTab === 'presets' ? 'active' : ''}`} onClick={() => setActiveTab('presets')} title={t('sidebar.presets')}>
+          </button>
+          <button type="button" className={`sidebar-item ${activeTab === 'presets' ? 'active' : ''}`} onClick={() => setActiveTab('presets')} title={t('sidebar.presets')} aria-current={activeTab === 'presets' ? 'page' : undefined}>
             <Download size={22} />
             <span>{t('sidebar.presets')}</span>
-          </div>
-          <div className={`sidebar-item ${activeTab === 'colors' ? 'active' : ''}`} onClick={() => setActiveTab('colors')} title={t('sidebar.colors')}>
+          </button>
+          <button type="button" className={`sidebar-item ${activeTab === 'colors' ? 'active' : ''}`} onClick={() => setActiveTab('colors')} title={t('sidebar.colors')} aria-current={activeTab === 'colors' ? 'page' : undefined}>
             <Palette size={22} />
             <span>{t('sidebar.colors')}</span>
-          </div>
-          <div className={`sidebar-item ${activeTab === 'templates' ? 'active' : ''}`} onClick={() => setActiveTab('templates')} title={t('sidebar.templates')}>
+          </button>
+          <button type="button" className={`sidebar-item ${activeTab === 'templates' ? 'active' : ''}`} onClick={() => setActiveTab('templates')} title={t('sidebar.templates')} aria-current={activeTab === 'templates' ? 'page' : undefined}>
             <LayoutTemplate size={22} />
             <span>{t('sidebar.templates')}</span>
-          </div>
-          <div className={`sidebar-item ${activeTab === 'desktop' ? 'active' : ''}`} onClick={() => setActiveTab('desktop')} title={t('sidebar.desktop')}>
+          </button>
+          <button type="button" className={`sidebar-item ${activeTab === 'desktop' ? 'active' : ''}`} onClick={() => setActiveTab('desktop')} title={t('sidebar.desktop')} aria-current={activeTab === 'desktop' ? 'page' : undefined}>
             <Monitor size={22} />
             <span>{t('sidebar.desktop')}</span>
-          </div>
+          </button>
         </nav>
         <div style={{ flex: 1 }}></div>
         <nav className="sidebar-nav">
-          <div
-            className="sidebar-item"
-            style={{ background: 'var(--accent-transparent)', color: 'var(--accent)' }}
+          <button type="button"
+            className="sidebar-item sidebar-apply"
             title={t('sidebar.apply')}
             onClick={async () => {
               if (!schemeData) {
@@ -1139,12 +1217,12 @@ function App() {
             }}
           >
             <Download size={22} />
-            <span style={{ fontWeight: 'bold' }}>{t('sidebar.apply')}</span>
-          </div>
-          <div className={`sidebar-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')} title={t('sidebar.settings')}>
+            <span>{t('sidebar.apply')}</span>
+          </button>
+          <button type="button" className={`sidebar-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')} title={t('sidebar.settings')} aria-current={activeTab === 'settings' ? 'page' : undefined}>
             <Settings size={22} />
             <span>{t('sidebar.settings')}</span>
-          </div>
+          </button>
         </nav>
       </aside>
 
@@ -1164,54 +1242,30 @@ function App() {
             currentSchemeType={schemeType}
             currentSchemeData={schemeData}
             currentMode={mode}
+            currentSettings={studioSettings}
             onApplyPreset={handleApplyPreset}
           />
         )}
 
         {activeTab === 'colors' && (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2>{t('colors.title')}</h2>
-              <div className="controls-row">
-                <select value={mode} onChange={(e) => handleModeChange(e.target.value as "dark" | "light" | "auto")}>
-                  <option value="dark">Dark</option>
-                  <option value="light">Light</option>
-                  <option value="auto">Auto (Wallpaper)</option>
-                </select>
-                <select value={schemeType} onChange={(e) => handleSchemeTypeChange(e.target.value)}>
-                  <optgroup label="Tinted">
-                    <option value="Tinted Smart">Smart</option>
-                    <option value="Tinted Content">Content</option>
-                    <option value="Tinted Expressive">Expressive</option>
-                    <option value="Tinted Fidelity">Fidelity</option>
-                    <option value="Tinted Fruit Salad">Fruit Salad</option>
-                    <option value="Tinted Neutral">Neutral</option>
-                    <option value="Tinted Rainbow">Rainbow</option>
-                    <option value="Tinted Tonal Spot">Tonal Spot</option>
-                    <option value="Tinted Vibrant">Vibrant</option>
-                  </optgroup>
-                  <optgroup label="Classic">
-                    <option value="Smart">Smart</option>
-                    <option value="Content">Content</option>
-                    <option value="Expressive">Expressive</option>
-                    <option value="Fidelity">Fidelity</option>
-                    <option value="Fruit Salad">Fruit Salad</option>
-                    <option value="Monochrome">Monochrome</option>
-                    <option value="Neutral">Neutral</option>
-                    <option value="Rainbow">Rainbow</option>
-                    <option value="Tonal Spot">Tonal Spot</option>
-                    <option value="Vibrant">Vibrant</option>
-                  </optgroup>
-                </select>
-              </div>
-            </div>
+          <div className="appearance-page page-transition">
+            <PageHeader title={t('colors.title')} actions={<div className="appearance-controls">
+              <Select label="Mode" disabled={isLoading || !settingsReady} value={mode}
+                onValueChange={value => handleModeChange(value as "dark" | "light" | "auto")}
+                options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }, { value: "auto", label: "Auto (Wallpaper)" }]} />
+              <Select label="Scheme" disabled={isLoading || !settingsReady} value={schemeType} onValueChange={handleSchemeTypeChange}
+                options={[
+                  ...["Smart", "Content", "Expressive", "Fidelity", "Fruit Salad", "Neutral", "Rainbow", "Tonal Spot", "Vibrant"].map(name => ({ value: `Tinted ${name}`, label: name, group: "Tinted" })),
+                  ...["Smart", "Content", "Expressive", "Fidelity", "Fruit Salad", "Monochrome", "Neutral", "Rainbow", "Tonal Spot", "Vibrant"].map(name => ({ value: name, label: name, group: "Classic" })),
+                ]} />
+            </div>} />
 
             <div className="colors-workspace-grid">
             {/* Left Column */}
             <div className="card colors-wallpaper-card">
               <h3>{t('colors.wallpaperPreview')}</h3>
               {wallpaperPath ? (
-                <div 
+                <button type="button"
                   className="wallpaper-preview" 
                   style={{ 
                     backgroundImage: `url("${convertFileSrc(wallpaperPath)}")`,
@@ -1219,13 +1273,14 @@ function App() {
                     backgroundPosition: 'center',
                     cursor: 'pointer'
                   }}
+                  aria-label={t('colors.wallpaperPreview')}
                   onClick={selectImage}
                 />
               ) : (
-                <div className="wallpaper-preview wallpaper-placeholder" onClick={selectImage}>
+                <button type="button" className="wallpaper-preview wallpaper-placeholder" onClick={selectImage}>
                   <Image size={48} />
                   <span>{isLoading ? t('colors.generatingPalette') : t('colors.clickToSelect')}</span>
-                </div>
+                </button>
               )}
               
               {errorMsg && (
@@ -1244,9 +1299,11 @@ function App() {
                   }}
                 >
                   <span style={{opacity: 0.7}}>{t('colors.extracted')}</span>
-                  <span style={{fontWeight: 'bold'}}>{(schemeData?.source_color_hex || '#xxxxxx').toUpperCase()}</span>
+                  <span style={{fontWeight: 'bold'}}>{(schemeData?.source_color_hex || '—').toUpperCase()}</span>
                 </div>
               </div>
+              <AdvancedGeneration settings={studioSettings.generation} candidates={schemeData?.source_candidates ?? []}
+                selectedIndex={schemeData?.seed_index ?? 0} disabled={!settingsReady || isLoading} onChange={handleGenerationChange} />
             </div>
 
             {/* Right Column - Colors */}
@@ -1315,15 +1372,23 @@ function App() {
               {renderTemplateColorEditor()}
               {renderKdeColorEditor()}
             </div>
-          </>
+          </div>
         )}
 
         {activeTab === 'templates' && (
-          <Templates schemeData={schemeData} />
+          <Templates schemeData={buildThemeContext()} />
         )}
 
         {activeTab === 'desktop' && (
-          <KdeIntegration 
+          <KdeIntegration
+            integrationSettings={studioSettings.integrations}
+            onIntegrationSettingsChange={async integrations => {
+              await persistSettings({ integrations });
+              if (schemeData) {
+                const warnings = await invoke<string[]>("apply_kde_integrations", { context: buildThemeContext() });
+                warnings.forEach(warning => notify(warning, "info"));
+              }
+            }}
             schemeData={buildThemeContext()}
             themeContext={buildThemeContext()}
             wallpaperPath={wallpaperPath}
@@ -1342,7 +1407,7 @@ function App() {
                 await invoke("mark_kde_wallpaper_handled", { wallpaperPath: path }).catch(error =>
                   console.warn("Failed to sync KDE watcher state:", error)
                 );
-                const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType });
+                const rawData = await invoke<SchemeData>("generate_scheme_from_image", { imagePath: path, schemeType, settings: studioSettingsRef.current.generation });
                 if (schemeGenerationRef.current !== generation) {
                   throw new Error("Color generation was superseded by a newer request.");
                 }
@@ -1363,88 +1428,33 @@ function App() {
         )}
 
         {activeTab === 'settings' && (
-          <div style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24, height: '100%', width: '100%' }}>
-            <div>
-              <h2>{t('settings.title')}</h2>
-              <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-                {t('settings.description')}
-              </p>
-            </div>
-
-            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <div style={{ maxWidth: 620 }}>
-                  <h3 style={{ marginTop: 0 }}>{t('settings.language')}</h3>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
-                    {t('settings.languageDescription')}
-                  </p>
-                </div>
-                <select
-                  value={i18n.language}
-                  onChange={(e) => i18n.changeLanguage(e.target.value)}
-                  style={{ minWidth: 120, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                >
-                  <option value="pt-BR">Português (Brasil)</option>
-                  <option value="en">English</option>
-                </select>
-              </div>
-
-              <div style={{ height: 1, backgroundColor: 'var(--border)', margin: '8px 0' }} />
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <div style={{ maxWidth: 620 }}>
-                  <h3 style={{ marginTop: 0 }}>{t('settings.wallpapersPerPage')}</h3>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
-                    {t('settings.wallpapersPerPageDescription')}
-                  </p>
-                </div>
-                <select
-                  value={wallpapersPerPage}
-                  onChange={(e) => handleWallpapersPerPageChange(e.target.value)}
-                  style={{ minWidth: 120, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                >
-                  {WALLPAPERS_PER_PAGE_OPTIONS.map(option => (
-                    <option key={option} value={option}>{option}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                <div style={{ maxWidth: 620 }}>
-                  <h3 style={{ marginTop: 0 }}>{t('settings.wallhavenTitle')}</h3>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 0 }}>
-                    {t('settings.wallhavenDescription')}{' '}
-                    <button
-                      type="button"
-                      onClick={() => openUrl('https://wallhaven.cc/settings/account')}
-                      style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 13, textDecoration: 'underline' }}
-                    >
-                      {t('settings.wallhavenGetKey')}
-                    </button>
-                  </p>
-                </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <input
-                    type="password"
-                    value={wallhavenApiKeyInput}
-                    onChange={(e) => { setWallhavenApiKeyInput(e.target.value); setWallhavenKeyStatus("idle"); }}
-                    placeholder={t('settings.wallhavenKeyPlaceholder')}
-                    style={{ minWidth: 220, padding: '10px 12px', borderRadius: 8, background: 'var(--surface-hover)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                  />
-                  <button className="btn btn-secondary" onClick={validateWallhavenKey} disabled={wallhavenKeyStatus === "checking"}>
-                    {wallhavenKeyStatus === "checking" ? t('settings.wallhavenValidating') : t('settings.wallhavenValidate')}
-                  </button>
-                </div>
-              </div>
-              {wallhavenKeyStatus === "valid" && (
-                <span style={{ color: 'var(--accent)', fontSize: 13 }}>✓ {t('settings.wallhavenKeyValid')}</span>
-              )}
-              {wallhavenKeyStatus === "invalid" && (
-                <span style={{ color: 'var(--danger)', fontSize: 13 }}>✗ {t('settings.wallhavenKeyInvalid')}</span>
-              )}
-            </div>
+          <div className="settings-page page-transition">
+            <PageHeader title={t('settings.title')} description={t('settings.description')} />
+            <Section title={t('settings.general')} className="settings-general">
+              <SettingRow title={t('settings.language')} description={t('settings.languageDescription')}>
+                <Select label={t('settings.language')} value={i18n.language}
+                  onValueChange={value => { void i18n.changeLanguage(value); }}
+                  options={[{ value: 'pt-BR', label: 'Português (Brasil)' }, { value: 'en', label: 'English' }]} />
+              </SettingRow>
+              <SettingRow title={t('settings.wallpapersPerPage')} description={t('settings.wallpapersPerPageDescription')}>
+                <Select label={t('settings.wallpapersPerPage')} value={String(wallpapersPerPage)}
+                  onValueChange={handleWallpapersPerPageChange}
+                  options={WALLPAPERS_PER_PAGE_OPTIONS.map(option => ({ value: String(option), label: String(option) }))} />
+              </SettingRow>
+            </Section>
+            <WallpaperLibraryControls />
+            <Section title={t('settings.wallhavenTitle')} description={t('settings.wallhavenDescription')}>
+              <SettingRow title={t('settings.wallhavenTitle')} description={<button type="button" className="text-link" onClick={() => openUrl('https://wallhaven.cc/settings/account')}>{t('settings.wallhavenGetKey')}</button>}>
+                <input type="password" value={wallhavenApiKeyInput}
+                  onChange={e => { setWallhavenApiKeyInput(e.target.value); setWallhavenKeyStatus('idle'); }}
+                  placeholder={t('settings.wallhavenKeyPlaceholder')} aria-label={t('settings.wallhavenTitle')} />
+                <button className="btn btn-secondary" onClick={validateWallhavenKey} disabled={wallhavenKeyStatus === 'checking'}>
+                  {wallhavenKeyStatus === 'checking' ? t('settings.wallhavenValidating') : t('settings.wallhavenValidate')}
+                </button>
+              </SettingRow>
+              {wallhavenKeyStatus === 'valid' && <p className="setting-feedback success" role="status">✓ {t('settings.wallhavenKeyValid')}</p>}
+              {wallhavenKeyStatus === 'invalid' && <p className="setting-feedback error" role="alert">✗ {t('settings.wallhavenKeyInvalid')}</p>}
+            </Section>
           </div>
         )}
       </main>

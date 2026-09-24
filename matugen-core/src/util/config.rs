@@ -33,6 +33,7 @@ pub struct Config {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ConfigFile {
     pub config: Config,
+    #[serde(default)]
     pub templates: HashMap<String, Template>,
 }
 
@@ -106,5 +107,17 @@ impl ConfigFile {
 
     fn read_from_fallback_path() -> Result<ConfigFile, Report> {
         Ok(toml::from_str(DEFAULT_CONFIG)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigFile;
+
+    #[test]
+    fn config_without_installed_templates_is_valid() {
+        let config: ConfigFile = toml::from_str("[config]\n").unwrap();
+        assert!(config.templates.is_empty());
+        assert!(toml::from_str::<ConfigFile>("[config]\n[templates]\ninvalid = 1\n").is_err());
     }
 }

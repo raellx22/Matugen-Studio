@@ -88,7 +88,12 @@ export const buildAppTheme = (schemeData: any, mode: AppThemeMode): AppThemeSnap
   const surfaceContainer = readColor(schemeData, "surface_container", resolvedMode, STATIC_DARK_THEME.vars["--surface-solid"]);
   const surfaceContainerHigh = readColor(schemeData, "surface_container_high", resolvedMode, surfaceContainer);
   const surfaceContainerLow = readColor(schemeData, "surface_container_low", resolvedMode, surface);
+  const surfaceContainerLowest = readColor(schemeData, "surface_container_lowest", resolvedMode, surface);
+  const surfaceContainerHighest = readColor(schemeData, "surface_container_highest", resolvedMode, surfaceContainerHigh);
   const onSurface = readColor(schemeData, "on_surface", resolvedMode, resolvedMode === "dark" ? "#FFFFFF" : "#111111");
+  const onSurfaceVariant = readColor(schemeData, "on_surface_variant", resolvedMode, onSurface);
+  const outlineVariant = readColor(schemeData, "outline_variant", resolvedMode, onSurfaceVariant);
+  const secondaryContainer = readColor(schemeData, "secondary_container", resolvedMode, surfaceContainerHigh);
   const primary = readColor(schemeData, "primary", resolvedMode, STATIC_DARK_THEME.vars["--accent"]);
   const onPrimary = readColor(schemeData, "on_primary", resolvedMode, STATIC_DARK_THEME.vars["--on-accent"]);
   const error = readColor(schemeData, "error", resolvedMode, STATIC_DARK_THEME.vars["--danger"]);
@@ -96,12 +101,17 @@ export const buildAppTheme = (schemeData: any, mode: AppThemeMode): AppThemeSnap
   const vars: CssVars = {
     "--surface-base": surface,
     "--surface-solid": surfaceContainerLow,
+    "--surface-workspace": surfaceContainerLowest,
+    "--surface-section": surfaceContainer,
+    "--surface-interactive": surfaceContainerHigh,
+    "--surface-interactive-hover": surfaceContainerHighest,
+    "--nav-selected": secondaryContainer,
     "--surface-elevated": rgba(onSurface, resolvedMode === "dark" ? 0.055 : 0.065),
     "--surface-elevated-hover": rgba(onSurface, resolvedMode === "dark" ? 0.085 : 0.095),
     "--text-primary": rgba(onSurface, 0.94),
-    "--text-secondary": rgba(onSurface, 0.68),
+    "--text-secondary": onSurfaceVariant,
     "--text-muted": rgba(onSurface, 0.48),
-    "--border-subtle": rgba(onSurface, resolvedMode === "dark" ? 0.1 : 0.16),
+    "--border-subtle": rgba(outlineVariant, resolvedMode === "dark" ? 0.3 : 0.52),
     "--border-strong": rgba(onSurface, resolvedMode === "dark" ? 0.18 : 0.26),
     "--accent": primary,
     "--on-accent": onPrimary,

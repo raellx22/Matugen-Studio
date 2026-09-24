@@ -1,0 +1,90 @@
+name: Linux AppImage release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Ubuntu 22.04 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential file libayatana-appindicator3-dev librsvg2-dev \
+            libssl-dev libwebkit2gtk-4.1-dev libxdo-dev patchelf \
+            pkg-config squashfs-tools xdg-utils
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install locked npm dependencies
+        run: npm ci
+
+      - name: Quality gate
+        run: |
+          npm run build
+          npm test
+          cargo fmt --check --manifest-path src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --locked --manifest-path matugen-core/Cargo.toml
+          git diff --check
+
+      - name: Build Ubuntu 22.04 AppImage
+        run: npm run tauri build -- --bundles appimage
+
+      - name: Normalize artifact name and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(src-tauri/target/release/bundle/appimage/*.AppImage)
+          test "${#images[@]}" -eq 1
+          mkdir -p dist
+          cp "${images[0]}" dist/Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage
+          cd dist
+          sha256sum *.AppImage > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Audit AppImage contents and glibc baseline
+        run: bash scripts/audit-appimage.sh dist/Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage
+
+      - name: Upload manual and tag build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Matugen-Studio-2.0.0-rc.1-linux-x86_64
+          path: |
+            dist/Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish 2.0 RC1 prerelease from CI build
+        if: github.ref == 'refs/tags/v2.0.0-rc.1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.0.0-rc.1 \
+            dist/Matugen-Studio-2.0.0-rc.1-linux-x86_64.AppImage \
+            dist/SHA256SUMS \
+            --verify-tag \
+            --prerelease \
+            --title "Matugen Studio 2.0.0 RC1" \
+            --notes-file RELEASE_NOTES_2.0.0-rc.1.md

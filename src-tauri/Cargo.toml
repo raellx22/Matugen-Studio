@@ -1,6 +1,6 @@
 [package]
 name = "matugen-studio"
-version = "0.1.1"
+version = "2.0.0-rc.1"
 description = "A desktop app for generating and applying Matugen themes on Linux."
 authors = ["raellx22"]
 license = "GPL-2.0-or-later"
@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -40,3 +40,9 @@ tokio = { version = "1", features = ["time", "sync"] }
 zbus = "5.15"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Isolated 2025 renderer; keep the existing core on material-colors 0.4.2.
+material-colors-modern = { package = "material-colors", git = "https://github.com/Aiving/material-colors.git", rev = "3fe7f52cde8c221d9a44dec84bca3706a71bb080" }
+
+[dev-dependencies]
+tempfile = "3"

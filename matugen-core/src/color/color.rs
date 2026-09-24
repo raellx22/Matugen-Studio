@@ -202,13 +202,12 @@ pub fn get_source_color(
     Ok(source_color)
 }
 
-pub fn get_source_color_from_image(
+/// Return the same ranked candidates used by CLI selection, without prompting.
+pub fn get_source_candidates_from_image(
     path: &str,
     filter_type: FilterType,
     fallback_color: Option<Argb>,
-    prefer: &Option<SelectionPreference>,
-    source_color_index: &Option<i64>,
-) -> Result<Argb, Report> {
+) -> Result<Vec<Argb>, Report> {
     let mut original = ImageReader::open(path)?;
     let image = original.resize(112, 112, filter_type);
     let pixels: Vec<Argb> = image
@@ -228,6 +227,18 @@ pub fn get_source_color_from_image(
     }
 
     let ranked = Score::score(&result.color_to_count, None, fallback_color, None);
+    Ok(ranked)
+
+}
+
+pub fn get_source_color_from_image(
+    path: &str,
+    filter_type: FilterType,
+    fallback_color: Option<Argb>,
+    prefer: &Option<SelectionPreference>,
+    source_color_index: &Option<i64>,
+) -> Result<Argb, Report> {
+    let ranked = get_source_candidates_from_image(path, filter_type, fallback_color)?;
 
     let ranked_formatted: Vec<String> = ranked
         .clone()

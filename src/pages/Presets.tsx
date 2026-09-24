@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
+import type { StudioSettings } from "../utils/studioSettings";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open, save } from "@tauri-apps/plugin-dialog";
 import { Layers, Trash2, Check, Download, Palette, Monitor, Share2, Upload, Package, Sun, Moon } from "lucide-react";
 
 // ── Types matching the Rust PresetV2 struct ───────────────────────────────────
@@ -72,6 +73,7 @@ interface PresetsProps {
   currentSchemeType: string;
   currentSchemeData: any;
   currentMode: string;
+  currentSettings: StudioSettings;
   onApplyPreset: (preset: PresetV2) => Promise<void>;
 }
 
@@ -80,6 +82,7 @@ export default function Presets({
   currentSchemeType,
   currentSchemeData,
   currentMode,
+  currentSettings,
   onApplyPreset,
 }: PresetsProps) {
   const { t } = useTranslation();
@@ -98,7 +101,10 @@ export default function Presets({
       setPresets(data);
     } catch (e) {
       console.error(e);
-      alert("Failed to load presets: " + e);
+      await message(t('presets.loadError', { error: String(e) }), {
+        title: t('presets.title'),
+        kind: "error",
+      });
     } finally {
       setIsLoading(false);
     }
@@ -119,14 +125,17 @@ export default function Presets({
   const handleSavePreset = async () => {
     if (!newPresetName.trim()) return;
     if (!currentSchemeData) {
-      alert("No theme generated yet. Please go to Source tab and apply a wallpaper first.");
+      await message(t('presets.noThemeWarning'), {
+        title: t('presets.saveModalTitle'),
+        kind: "warning",
+      });
       return;
     }
 
     const normalizedName = newPresetName.trim();
     if (presets.some((preset) => preset.name === normalizedName)) {
-      const overwrite = await confirm(`A preset named '${normalizedName}' already exists. Replace it?`, {
-        title: "Replace preset",
+      const overwrite = await confirm(t('presets.overwriteConfirm', { name: normalizedName }), {
+        title: t('presets.replaceTitle'),
         kind: "warning",
       });
       if (!overwrite) return;
@@ -140,12 +149,13 @@ export default function Presets({
           wallpaper_path: currentWallpaper,
           scheme_type: currentSchemeType,
           mode: currentMode,
-          contrast: null,
+          ...(currentSchemeData?.generation_settings ?? currentSettings.generation),
+          seed_index: currentSchemeData?.seed_index ?? currentSettings.generation.seed_index,
           opacity: null,
           source_color_hex: currentSchemeData?.source_color_hex ?? null,
           scheme_data: currentSchemeData,
           custom_colors: [],
-          desktop: null,
+          desktop: { target_de: "KDE", apply_wallpaper: true, apply_kde_colorscheme: true, apply_templates: true, integrations: currentSettings.integrations },
         },
       });
       await loadPresets();
@@ -153,7 +163,10 @@ export default function Presets({
       setNewPresetName("");
     } catch (e: unknown) {
       console.error("Save preset failed:", e);
-      alert("Failed to save preset: " + e);
+      await message(t('presets.saveError', { error: String(e) }), {
+        title: t('presets.saveModalTitle'),
+        kind: "error",
+      });
     } finally {
       setIsSaving(false);
     }
@@ -170,7 +183,10 @@ export default function Presets({
       await loadPresets();
     } catch (e) {
       console.error("Delete preset failed:", e);
-      alert("Failed to delete preset: " + e);
+      await message(t('presets.deleteError', { error: String(e) }), {
+        title: t('presets.deleteTitle'),
+        kind: "error",
+      });
     }
   };
 
@@ -183,9 +199,15 @@ export default function Presets({
       if (!filePath) return;
 
       await invoke("export_preset", { name: preset.name, outputPath: filePath });
-      alert(`Preset "${preset.name}" exported successfully!\n\nFile: ${filePath}`);
+      await message(t('presets.exportSuccess', { name: preset.name, path: filePath }), {
+        title: t('presets.exportTitle'),
+        kind: "info",
+      });
     } catch (e) {
-      alert("Failed to export preset: " + e);
+      await message(t('presets.exportError', { error: String(e) }), {
+        title: t('presets.exportTitle'),
+        kind: "error",
+      });
     }
   };
 
@@ -202,14 +224,20 @@ export default function Presets({
       await loadPresets();
       setImportStatus("");
 
-      let msg = `Preset "${result.preset.name}" imported successfully!`;
+      let msg = t('presets.importSuccess', { name: result.preset.name });
       if (result.warnings.length > 0) {
-        msg += "\n\nWarnings:\n• " + result.warnings.join("\n• ");
+        msg += "\n\n" + t('presets.importWarnings') + "\n• " + result.warnings.join("\n• ");
       }
-      alert(msg);
+      await message(msg, {
+        title: t('presets.import'),
+        kind: result.warnings.length > 0 ? "warning" : "info",
+      });
     } catch (e) {
       setImportStatus("");
-      alert("Failed to import preset: " + e);
+      await message(t('presets.importError', { error: String(e) }), {
+        title: t('presets.import'),
+        kind: "error",
+      });
     }
   };
 
@@ -228,7 +256,7 @@ export default function Presets({
     m === "light" ? <Sun size={12} /> : <Moon size={12} />;
 
   return (
-    <div className="tab-content" style={{ display: "flex", flexDirection: "column", gap: 24, height: "100%" }}>
+    <div className="tab-content presets-page page-transition">
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <div>
           <h2>{t('presets.title')}</h2>
@@ -263,16 +291,17 @@ export default function Presets({
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16, overflowY: "auto" }}>
+      <div className="collection-grid">
         {isLoading ? (
           <p>{t('presets.loading')}</p>
         ) : presets.length === 0 ? (
-          <div className="empty-state" style={{ gridColumn: "1 / -1" }}>
+          <div className="empty-state collection-empty">
             <Layers size={48} opacity={0.2} />
-            <p>{t('presets.noPresets')}</p>
+            <strong>{t('presets.noPresets')}</strong>
             <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>
               {t('presets.saveOrImport')}
             </p>
+            <button className="btn btn-secondary btn-compact" onClick={handleImportPreset}>{t('presets.import')}</button>
           </div>
         ) : (
           presets.map((preset, idx) => {
@@ -283,16 +312,7 @@ export default function Presets({
             const surface   = getColor(sd, "surface");
 
             return (
-              <div key={idx} className="template-card" style={{
-                background: "var(--surface)",
-                borderRadius: 16,
-                padding: 20,
-                border: "1px solid var(--border)",
-                display: "flex",
-                flexDirection: "column",
-                gap: 12,
-                transition: "all 0.2s",
-              }}>
+              <div key={idx} className="template-card preset-card">
                 {/* Colour band preview */}
                 <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", gap: 2 }}>
                   <div style={{ flex: 3, background: primary   || "var(--accent)" }} />
@@ -367,7 +387,7 @@ export default function Presets({
 
       {showSaveModal && (
         <div className="modal-overlay">
-          <div className="modal-content" style={{ width: 420 }}>
+          <div className="modal-content" role="dialog" aria-modal="true" aria-label="Save Preset" style={{ width: 'min(92vw, 420px)', maxWidth: 420 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <h3>Save Preset</h3>
               <button className="btn btn-ghost icon-btn" onClick={() => setShowSaveModal(false)} title="Close" aria-label="Close save preset dialog">✕</button>

@@ -1,0 +1,105 @@
+{
+  "applications": [
+    {
+      "id": "discord", "name": "Discord", "category": "Communication",
+      "variants": [
+        {
+          "id": "discord-midnight", "name": "Midnight", "sourcePath": "midnight-discord.css",
+          "targets": [
+            { "id": "vesktop-native", "label": "Vesktop", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/vesktop/themes/midnight-discord.css", "detectPath": "$XDG_CONFIG_HOME/vesktop" },
+            { "id": "vesktop-flatpak", "label": "Vesktop Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/dev.vencord.Vesktop/config/vesktop/themes/midnight-discord.css", "detectPath": "$HOME/.var/app/dev.vencord.Vesktop" },
+            { "id": "vencord-native", "label": "Vencord", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/Vencord/themes/midnight-discord.css", "detectPath": "$XDG_CONFIG_HOME/Vencord" },
+            { "id": "vencord-flatpak", "label": "Vencord Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/com.discordapp.Discord/config/Vencord/themes/midnight-discord.css", "detectPath": "$HOME/.var/app/com.discordapp.Discord" },
+            { "id": "discord-flatpak", "label": "Discord Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/com.discordapp.Discord/config/discord/themes/midnight-discord.css", "detectPath": "$HOME/.var/app/com.discordapp.Discord" },
+            { "id": "betterdiscord-native", "label": "BetterDiscord", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/BetterDiscord/themes/matugen-midnight.theme.css", "detectPath": "$XDG_CONFIG_HOME/BetterDiscord" },
+            { "id": "equibop-native", "label": "Equibop", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/equibop/themes/midnight-discord.css", "detectPath": "$XDG_CONFIG_HOME/equibop" },
+            { "id": "equibop-flatpak", "label": "Equibop Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/io.github.equicord.equibop/config/equibop/themes/midnight-discord.css", "detectPath": "$HOME/.var/app/io.github.equicord.equibop" }
+          ]
+        },
+        {
+          "id": "discord-system24", "name": "System24", "sourcePath": "system24.css",
+          "targets": [
+            { "id": "vesktop-native", "label": "Vesktop", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/vesktop/themes/system24.css", "detectPath": "$XDG_CONFIG_HOME/vesktop" },
+            { "id": "vesktop-flatpak", "label": "Vesktop Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/dev.vencord.Vesktop/config/vesktop/themes/system24.css", "detectPath": "$HOME/.var/app/dev.vencord.Vesktop" },
+            { "id": "vencord-native", "label": "Vencord", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/Vencord/themes/system24.css", "detectPath": "$XDG_CONFIG_HOME/Vencord" },
+            { "id": "vencord-flatpak", "label": "Vencord Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/com.discordapp.Discord/config/Vencord/themes/system24.css", "detectPath": "$HOME/.var/app/com.discordapp.Discord" },
+            { "id": "discord-flatpak", "label": "Discord Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/com.discordapp.Discord/config/discord/themes/system24.css", "detectPath": "$HOME/.var/app/com.discordapp.Discord" },
+            { "id": "betterdiscord-native", "label": "BetterDiscord", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/BetterDiscord/themes/matugen-system24.theme.css", "detectPath": "$XDG_CONFIG_HOME/BetterDiscord" },
+            { "id": "equibop-native", "label": "Equibop", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/equibop/themes/system24.css", "detectPath": "$XDG_CONFIG_HOME/equibop" },
+            { "id": "equibop-flatpak", "label": "Equibop Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/io.github.equicord.equibop/config/equibop/themes/system24.css", "detectPath": "$HOME/.var/app/io.github.equicord.equibop" }
+          ]
+        },
+        {
+          "id": "discord.material", "name": "Material You", "sourcePath": "discord-material.css",
+          "description": "Original Matugen Studio adapter inspired by Noctalia; imports upstream CapnKitten Discord theme CSS over the network on first load. Includes dark and light modes. Requires manual activation; Noctalia CSS is not bundled.",
+          "source": { "kind": "community", "name": "Matugen Studio original adapter", "repository": "https://github.com/raellx22/Matugen-Studio", "author": "Matugen Studio contributors", "license": "GPL-2.0-or-later", "licenseStatus": "original-work", "attribution": "Original adapter inspired by Noctalia; CapnKitten Material Discord and Material You are remote upstream imports, not bundled." },
+          "automationLevel": "manual", "manualSteps": ["templates.steps.discordActivate"],
+          "targets": [
+            { "id": "vesktop-native", "label": "Vesktop", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/vesktop/themes/matugen-material.css", "detectPath": "$XDG_CONFIG_HOME/vesktop" },
+            { "id": "vesktop-flatpak", "label": "Vesktop Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/dev.vencord.Vesktop/config/vesktop/themes/matugen-material.css", "detectPath": "$HOME/.var/app/dev.vencord.Vesktop" },
+            { "id": "vencord-native", "label": "Vencord", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/Vencord/themes/matugen-material.css", "detectPath": "$XDG_CONFIG_HOME/Vencord" },
+            { "id": "vencord-flatpak", "label": "Vencord Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/com.discordapp.Discord/config/Vencord/themes/matugen-material.css", "detectPath": "$HOME/.var/app/com.discordapp.Discord" },
+            { "id": "betterdiscord-native", "label": "BetterDiscord", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/BetterDiscord/themes/matugen-material.theme.css", "detectPath": "$XDG_CONFIG_HOME/BetterDiscord" },
+            { "id": "equibop-native", "label": "Equibop", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/equibop/themes/matugen-material.css", "detectPath": "$XDG_CONFIG_HOME/equibop" },
+            { "id": "equibop-flatpak", "label": "Equibop Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/io.github.equicord.equibop/config/equibop/themes/matugen-material.css", "detectPath": "$HOME/.var/app/io.github.equicord.equibop" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vscode", "name": "VS Code", "category": "Development",
+      "variants": [{
+        "id": "vscode-default", "name": "Default", "sourcePath": "vscode-colors",
+        "targets": [
+          { "id": "colors", "label": "Colors", "installType": "manual", "outputPath": "$XDG_CACHE_HOME/matugen/vscode-colors" },
+          { "id": "json", "label": "JSON", "installType": "manual", "sourcePath": "vscode-colors.json", "outputPath": "$XDG_CACHE_HOME/matugen/vscode-colors.json" }
+        ]
+      }, {
+        "id": "vscode.material-premium", "name": "Material Premium Colors", "sourcePath": "vscode-material-premium.json",
+        "description": "Original Matugen Studio color-only fragment inspired by Zatch07. Manually merge workbench.colorCustomizations and editor.tokenColorCustomizations into VS Code User settings; do not replace settings.json. No upstream theme files are bundled.",
+        "source": { "kind": "community", "name": "Matugen Studio original color fragment", "repository": "https://github.com/raellx22/Matugen-Studio", "author": "Matugen Studio contributors", "license": "GPL-2.0-or-later", "licenseStatus": "original-work", "attribution": "Original color-only fragment inspired by Zatch07; no upstream theme files are bundled." },
+        "automationLevel": "manual", "manualSteps": ["templates.steps.vscodeMergeColors"],
+        "targets": [
+          { "id": "manual", "label": "JSON fragment", "installType": "manual", "outputPath": "$XDG_CACHE_HOME/matugen/vscode-material-premium.json" }
+        ]
+      }]
+    },
+    {
+      "id": "spotify", "name": "Spotify", "category": "Media",
+      "variants": [{
+        "id": "spotify-default", "name": "Spicetify", "sourcePath": "spicetify.ini",
+        "targets": [{ "id": "native", "label": "Spicetify", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/spicetify/Themes/Sleek/color.ini", "detectPath": "$XDG_CONFIG_HOME/spicetify" }]
+      }]
+    },
+    {
+      "id": "heroic", "name": "Heroic Games Launcher", "category": "Gaming",
+      "variants": [{
+        "id": "heroic-default", "name": "Default", "sourcePath": "heroic.css",
+        "targets": [
+          { "id": "native", "label": "Native", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/heroic/themes/matugen.css", "detectPath": "$XDG_CONFIG_HOME/heroic" },
+          { "id": "flatpak", "label": "Flatpak", "installType": "flatpak", "outputPath": "$HOME/.var/app/com.heroicgameslauncher.hgl/config/heroic/themes/matugen.css", "detectPath": "$HOME/.var/app/com.heroicgameslauncher.hgl" }
+        ]
+      }]
+    },
+    {
+      "id": "zen-browser", "name": "Zen Browser", "category": "Browsers",
+      "variants": [{
+        "id": "zen-browser-default", "name": "Default", "sourcePath": "zen-userchrome.css",
+        "targets": [
+          { "id": "userchrome", "label": "userChrome", "installType": "manual", "outputPath": "$XDG_CACHE_HOME/matugen/zen-userChrome.css" },
+          { "id": "usercontent", "label": "userContent", "installType": "manual", "sourcePath": "zen-usercontent.css", "outputPath": "$XDG_CACHE_HOME/matugen/zen-userContent.css" }
+        ]
+      }]
+    },
+    {
+      "id": "kvantum", "name": "Kvantum", "category": "Desktop",
+      "variants": [{
+        "id": "kvantum-default", "name": "Default", "sourcePath": "kvantum-colors.kvconfig",
+        "targets": [
+          { "id": "config", "label": "Configuration", "installType": "native", "outputPath": "$XDG_CONFIG_HOME/Kvantum/matugen/matugen.kvconfig", "detectPath": "$XDG_CONFIG_HOME/Kvantum" },
+          { "id": "svg", "label": "SVG", "installType": "native", "sourcePath": "kvantum-colors.svg", "outputPath": "$XDG_CONFIG_HOME/Kvantum/matugen/matugen.svg", "detectPath": "$XDG_CONFIG_HOME/Kvantum" }
+        ]
+      }]
+    }
+  ]
+}

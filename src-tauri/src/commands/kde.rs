@@ -11,8 +11,8 @@ use std::sync::{
 };
 use std::time::Duration;
 use tauri::{async_runtime::Mutex, Emitter, Manager};
-use zbus::zvariant::OwnedValue;
 use tokio::time::sleep;
+use zbus::zvariant::OwnedValue;
 
 static KDE_APPLY_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
@@ -1119,7 +1119,7 @@ async fn process_wallpaper_change(
     wallpaper: String,
     scheme_type: String,
     gtk_enabled: bool,
-    gtk_dark: bool,
+    _gtk_dark: bool,
     cancelled: Arc<AtomicBool>,
 ) {
     update_watcher_snapshot(app, |snapshot| {
@@ -1136,14 +1136,22 @@ async fn process_wallpaper_change(
     let scheme_for_task = scheme_type.clone();
     let app_for_task = app.clone();
     let cancelled_for_task = cancelled.clone();
+    let wallpaper_for_event = wallpaper.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         if cancelled_for_task.load(Ordering::SeqCst) {
             return Err("Wallpaper processing cancelled".to_string());
         }
-        let context = crate::commands::color::generate_scheme_from_image_blocking(
+        let settings = super::settings::get_studio_settings()?;
+        let mut context = crate::commands::color::generate_scheme_from_image_blocking(
             wallpaper_for_task,
-            scheme_for_task,
+            if settings.scheme_type.is_empty() {
+                scheme_for_task
+            } else {
+                settings.scheme_type.clone()
+            },
+            settings.generation.clone(),
         )?;
+        let effective_dark = super::settings::resolve_mode(&mut context, settings.mode);
         if cancelled_for_task.load(Ordering::SeqCst) {
             return Err("Wallpaper processing cancelled".to_string());
         }
@@ -1152,10 +1160,39 @@ async fn process_wallpaper_change(
             return Err("Wallpaper processing cancelled".to_string());
         }
         apply_kde_colorscheme_blocking(context.clone())?;
-        if gtk_enabled && !cancelled_for_task.load(Ordering::SeqCst) {
-            crate::commands::gtk::apply_gtk_theme_blocking(&app_for_task, &context, gtk_dark)?;
+        if !settings.kde_overrides.is_empty() {
+            apply_kde_color_values(
+                settings
+                    .kde_overrides
+                    .iter()
+                    .map(|(key, hex)| KdeColorValue {
+                        key: key.clone(),
+                        hex: hex.clone(),
+                    })
+                    .collect(),
+            )?;
         }
-        Ok::<(), String>(())
+        if settings.gtk_enabled.unwrap_or(gtk_enabled) && !cancelled_for_task.load(Ordering::SeqCst)
+        {
+            crate::commands::gtk::apply_gtk_theme_blocking(
+                &app_for_task,
+                &context,
+                effective_dark,
+            )?;
+        }
+        if cancelled_for_task.load(Ordering::SeqCst) {
+            return Err("Wallpaper processing cancelled".into());
+        }
+        let warnings = super::integrations::apply(&context, &settings.integrations)?;
+        app_for_task
+            .asset_protocol_scope()
+            .allow_file(&wallpaper_for_event)
+            .map_err(|e| e.to_string())?;
+        let _ = app_for_task.emit(
+            "studio-wallpaper-generated",
+            serde_json::json!({"wallpaper": wallpaper_for_event, "context": context}),
+        );
+        Ok::<Vec<String>, String>(warnings)
     })
     .await
     .map_err(|e| e.to_string())
@@ -1166,12 +1203,15 @@ async fn process_wallpaper_change(
     }
 
     match result {
-        Ok(()) => {
+        Ok(warnings) => {
             update_watcher_snapshot(app, |snapshot| {
                 snapshot.is_processing = false;
                 snapshot.last_handled_wallpaper = Some(wallpaper.clone());
-                snapshot.status_message =
-                    format!("Theme applied from {}.", wallpaper_file_name(&wallpaper));
+                snapshot.status_message = format!(
+                    "Theme applied from {}. {}",
+                    wallpaper_file_name(&wallpaper),
+                    warnings.join("; ")
+                );
                 snapshot.last_error = None;
             })
             .await;
@@ -1307,9 +1347,18 @@ mod tests {
         let context = minimal_context("#AABBCC");
         let generated = generate_kde_colorscheme(&context, "Test");
         let baseline_rgb = rgb_str("#AABBCC");
-        assert_eq!(read_ini_value(&generated, "Colors:Window", "BackgroundNormal"), Some(baseline_rgb.clone()));
-        assert_eq!(read_ini_value(&generated, "Colors:View", "BackgroundAlternate"), Some(baseline_rgb.clone()));
-        assert_eq!(read_ini_value(&generated, "WM", "inactiveBackground"), Some(baseline_rgb.clone()));
+        assert_eq!(
+            read_ini_value(&generated, "Colors:Window", "BackgroundNormal"),
+            Some(baseline_rgb.clone())
+        );
+        assert_eq!(
+            read_ini_value(&generated, "Colors:View", "BackgroundAlternate"),
+            Some(baseline_rgb.clone())
+        );
+        assert_eq!(
+            read_ini_value(&generated, "WM", "inactiveBackground"),
+            Some(baseline_rgb.clone())
+        );
 
         // Simulate what `apply_kde_color_values` does for the "windowBackground"
         // control: patch only the single ini property it owns.
@@ -1318,13 +1367,27 @@ mod tests {
             .find(|m| m.key == "windowBackground")
             .expect("windowBackground mapping must exist");
         let overridden_rgb = hex_to_rgb_string("#F1D46A").unwrap();
-        let patched = upsert_ini_value(&generated, mapping.section, mapping.property, &overridden_rgb);
+        let patched = upsert_ini_value(
+            &generated,
+            mapping.section,
+            mapping.property,
+            &overridden_rgb,
+        );
 
         // The edited control changes exactly what its label promises...
-        assert_eq!(read_ini_value(&patched, "Colors:Window", "BackgroundNormal"), Some(overridden_rgb));
+        assert_eq!(
+            read_ini_value(&patched, "Colors:Window", "BackgroundNormal"),
+            Some(overridden_rgb)
+        );
         // ...and nothing else that merely happened to share the same base color.
-        assert_eq!(read_ini_value(&patched, "Colors:View", "BackgroundAlternate"), Some(baseline_rgb.clone()));
-        assert_eq!(read_ini_value(&patched, "WM", "inactiveBackground"), Some(baseline_rgb));
+        assert_eq!(
+            read_ini_value(&patched, "Colors:View", "BackgroundAlternate"),
+            Some(baseline_rgb.clone())
+        );
+        assert_eq!(
+            read_ini_value(&patched, "WM", "inactiveBackground"),
+            Some(baseline_rgb)
+        );
     }
 
     #[test]
@@ -1335,7 +1398,11 @@ mod tests {
                 .iter()
                 .filter(|m| m.section == mapping.section && m.property == mapping.property)
                 .count();
-            assert_eq!(count, 1, "{}/{} is mapped by more than one control", mapping.section, mapping.property);
+            assert_eq!(
+                count, 1,
+                "{}/{} is mapped by more than one control",
+                mapping.section, mapping.property
+            );
         }
     }
 }

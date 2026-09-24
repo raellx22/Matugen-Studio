@@ -1,7 +1,10 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
-import { Search, LayoutTemplate, X } from "lucide-react";
+import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { LayoutTemplate, Search, X } from "lucide-react";
+import Select from "../components/Select";
+import { PageHeader } from "../components/Primitives";
 
 interface TemplateInfo {
   name: string;
@@ -11,7 +14,7 @@ interface TemplateInfo {
   size: number;
   category: string;
   targetApp: string;
-  automationLevel: "auto" | "config-patch" | "manual" | string;
+  automationLevel: string;
   installable: boolean;
   defaultOutputPath?: string;
   defaultPostHook?: string;
@@ -20,420 +23,395 @@ interface TemplateInfo {
   relatedFiles: string[];
 }
 
+interface CatalogTarget {
+  id: string;
+  label: string;
+  installType: "native" | "flatpak" | "manual";
+  inputPath: string;
+  outputPath: string;
+  detected: boolean;
+}
+
+interface CatalogVariant {
+  id: string;
+  name: string;
+  description?: string;
+  source: {
+    kind: "official" | "community";
+    name: string;
+    repository?: string;
+    author?: string;
+    license?: string;
+    licenseStatus?: string;
+    attribution?: string;
+    sourcePath?: string;
+    upstreamCommit?: string;
+    version?: string;
+  };
+  targets: CatalogTarget[];
+  template: TemplateInfo;
+}
+
+interface CatalogApp {
+  id: string;
+  name: string;
+  category: string;
+  variants: CatalogVariant[];
+}
+
+interface InstalledTemplateEntry {
+  key: string;
+  inputPath: string;
+  outputPath: string;
+}
+
 interface TemplatesProps {
   schemeData: Record<string, unknown> | null;
 }
 
-interface DiscordClient {
-  name: string;
-  path: string;
-  exists: boolean;
+const pairKey = (variant: CatalogVariant, target: CatalogTarget) => `${variant.id}__${target.id}`;
+const variantDescriptionKeys: Record<string, string> = {
+  "discord.material": "templates.variantDescriptions.discordMaterial",
+  "vscode.material-premium": "templates.variantDescriptions.vscodeMaterialPremium",
+};
+
+function colorizeText(text: string) {
+  const colorRegex = /(#[A-Fa-f0-9]{8}|#[A-Fa-f0-9]{6}|#[A-Fa-f0-9]{3}|rgba?\([^)]+\))/g;
+  return text.split(colorRegex).map((part, index) => {
+    if (!part.match(colorRegex)) return <span key={index}>{part}</span>;
+    let isLight = false;
+    if (part.startsWith("#")) {
+      let hex = part.slice(1);
+      if (hex.length === 3) hex = hex.split("").map(char => char + char).join("");
+      const red = parseInt(hex.slice(0, 2), 16);
+      const green = parseInt(hex.slice(2, 4), 16);
+      const blue = parseInt(hex.slice(4, 6), 16);
+      isLight = 0.2126 * red + 0.7152 * green + 0.0722 * blue > 128;
+    }
+    return <span key={index} className="template-color" style={{ backgroundColor: part, color: isLight ? "#000" : "#fff" }}>{part}</span>;
+  });
 }
 
 export default function Templates({ schemeData }: TemplatesProps) {
   const { t } = useTranslation();
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [catalog, setCatalog] = useState<CatalogApp[]>([]);
+  const [installed, setInstalled] = useState<Set<string>>(new Set());
+  const [installedEntries, setInstalledEntries] = useState<InstalledTemplateEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeCategory, setActiveCategory] = useState("All");
-  const [previewContent, setPreviewContent] = useState<string | null>(null);
-
-  const [previewName, setPreviewName] = useState<string | null>(null);
-  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [installTemplate, setInstallTemplate] = useState<TemplateInfo | null>(null);
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [source, setSource] = useState("all");
+  const [selectedApp, setSelectedApp] = useState<CatalogApp | null>(null);
+  const [variantId, setVariantId] = useState("");
+  const [targetId, setTargetId] = useState("");
   const [outputPath, setOutputPath] = useState("");
   const [postHook, setPostHook] = useState("");
   const [isInstalling, setIsInstalling] = useState(false);
-  const [discordClients, setDiscordClients] = useState<DiscordClient[]>([]);
-
-  // We add an effect to check Discord clients when the modal opens for midnight-discord.css
-  useEffect(() => {
-    if (installTemplate && installTemplate.relativePath.endsWith("midnight-discord.css")) {
-      checkDiscordClients();
-    }
-  }, [installTemplate]);
-
-  const checkDiscordClients = async () => {
-    const clients = [
-      { name: "Vesktop", path: "~/.config/vesktop" },
-      { name: "Vesktop (Flatpak)", path: "~/.var/app/dev.vencord.Vesktop/config/vesktop" },
-      { name: "Equibop", path: "~/.config/equibop" },
-      { name: "Equibop (Flatpak)", path: "~/.var/app/io.github.equicord.equibop/config/equibop" },
-      { name: "Vencord", path: "~/.config/Vencord" },
-      { name: "Discord (Flatpak)", path: "~/.var/app/com.discordapp.Discord/config/discord" },
-    ];
-    
-    const results = await Promise.all(
-      clients.map(async (client) => {
-        try {
-          const exists = await invoke<boolean>("dir_exists", { path: client.path });
-          return { ...client, exists };
-        } catch (e) {
-          return { ...client, exists: false };
-        }
-      })
-    );
-    setDiscordClients(results);
-  };
-
-  const [installedTemplates, setInstalledTemplates] = useState<Set<string>>(new Set());
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const previewRequest = useRef(0);
+  const detailDialog = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
 
   const fetchInstalled = async () => {
     try {
-      const installed: string[] = await invoke("get_installed_templates");
-      setInstalledTemplates(new Set(installed));
-    } catch (e) {
-      console.error("Failed to fetch installed templates", e);
+      const [keys, entries] = await Promise.all([
+        invoke<string[]>("get_installed_templates"),
+        invoke<InstalledTemplateEntry[]>("get_installed_template_entries")
+      ]);
+      setInstalled(new Set(keys));
+      setInstalledEntries(entries);
+    } catch (error) {
+      console.error("Failed to fetch installed templates", error);
     }
   };
 
   useEffect(() => {
-    async function fetchTemplates() {
-      try {
-        const data: TemplateInfo[] = await invoke("list_bundled_templates");
-        setTemplates(data);
-      } catch (err) {
-        console.error("Error fetching templates", err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    fetchTemplates();
+    invoke<CatalogApp[]>("list_template_catalog")
+      .then(setCatalog)
+      .catch(error => console.error("Failed to load template catalog", error))
+      .finally(() => setIsLoading(false));
     fetchInstalled();
   }, []);
 
-  const categories = ["All", ...Array.from(new Set(templates.map(t => t.category)))];
-
-  const filteredTemplates = templates.filter(t => {
-    const q = searchQuery.toLowerCase();
-    const matchesSearch =
-      t.displayName.toLowerCase().includes(q) ||
-      t.targetApp.toLowerCase().includes(q) ||
-      t.relativePath.toLowerCase().includes(q);
-    const matchesCategory = activeCategory === "All" || t.category === activeCategory;
-    return matchesSearch && matchesCategory;
+  const categoryLabel = (value: string) => t(`templates.categories.${value}`, { defaultValue: value });
+  const variantsFor = (app: CatalogApp) => app.variants.filter(variant =>
+    source === "all" || variant.source.kind === source
+  );
+  const categories = ["all", ...new Set(catalog.map(app => app.category))];
+  const filtered = catalog.filter(app => {
+    const variants = variantsFor(app);
+    const query = search.trim().toLocaleLowerCase();
+    return variants.length > 0 && (category === "all" || app.category === category) &&
+      (!query || [app.name, app.category, categoryLabel(app.category), ...variants.flatMap(variant => [variant.name, variant.description ?? ""])]
+        .some(value => value.toLocaleLowerCase().includes(query)));
   });
+  const selectedVariants = selectedApp ? variantsFor(selectedApp) : [];
+  const variant = selectedVariants.find(item => item.id === variantId);
+  const target = variant?.targets.find(item => item.id === targetId);
 
-  const installedKey = (templateName: string) => {
-    return templateName.replace(/[^A-Za-z0-9]/g, "_");
+  const installedName = (item: CatalogVariant, destination: CatalogTarget) => {
+    const key = pairKey(item, destination);
+    if (installed.has(key)) return key;
+    const sourceName = destination.inputPath.split(/[\\/]/).pop() ?? "";
+    const templateName = item.template.name.split(/[\\/]/).pop() ?? "";
+    const legacyKeys = [sourceName, templateName].map(name => name.replace(/[^A-Za-z0-9]/g, "_"));
+    const legacyDiscordOutput = (item.id === "discord-midnight" || item.id === "discord-system24") ?
+      `${destination.outputPath.slice(0, destination.outputPath.lastIndexOf("/") + 1)}matugen.css` : null;
+    const legacy = installedEntries.find(entry =>
+      installed.has(entry.key) && legacyKeys.includes(entry.key) &&
+      (entry.outputPath === destination.outputPath || entry.outputPath === legacyDiscordOutput) &&
+      entry.inputPath.split(/[\\/]/).pop()?.replace(/[^A-Za-z0-9]/g, "_") === entry.key
+    );
+    return legacy?.inputPath.split(/[\\/]/).pop() ?? null;
   };
 
-  const automationLabel = (level: string) => {
-    if (level === "auto") return t('templates.automation.auto');
-    if (level === "config-patch") return t('templates.automation.config');
-    return t('templates.automation.manual');
+  const resetPreview = () => {
+    previewRequest.current++;
+    setPreviewContent(null);
+    setIsPreviewLoading(false);
   };
 
-  const automationColor = (level: string) => {
-    if (level === "auto") return "#8bd5a9";
-    if (level === "config-patch") return "#f5d37a";
-    return "#f2a7a7";
+  const closeDetail = () => {
+    if (isInstalling) return;
+    resetPreview();
+    setSelectedApp(null);
+    returnFocus.current?.focus();
   };
 
-  const handlePreview = async (template: TemplateInfo) => {
+  useEffect(() => {
+    if (!selectedApp) return;
+    detailDialog.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDetail();
+      } else if (event.key === "Tab") {
+        const focusable = detailDialog.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), a[href]'
+        );
+        if (!focusable?.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === detailDialog.current)) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [selectedApp, isInstalling]);
+
+  const chooseVariant = (item: CatalogVariant) => {
+    resetPreview();
+    const destination = item.targets.find(candidate => candidate.detected) ?? item.targets[0];
+    setVariantId(item.id);
+    setTargetId(destination?.id ?? "");
+    setOutputPath(destination?.outputPath ?? item.template.defaultOutputPath ?? "");
+    setPostHook(item.template.defaultPostHook ?? "");
+  };
+
+  const openDetail = (app: CatalogApp, trigger: HTMLElement) => {
+    const variants = variantsFor(app);
+    if (!variants.length) return;
+    returnFocus.current = trigger;
+    const query = search.trim().toLocaleLowerCase();
+    chooseVariant(variants.find(item => query && [item.name, item.description ?? ""]
+      .some(value => value.toLocaleLowerCase().includes(query))) ?? variants[0]);
+    setSelectedApp(app);
+  };
+
+  const chooseTarget = (id: string) => {
+    const destination = variant?.targets.find(item => item.id === id);
+    if (!destination) return;
+    resetPreview();
+    setTargetId(id);
+    setOutputPath(destination.outputPath);
+  };
+
+  const preview = async () => {
+    if (!variant) return;
     if (!schemeData) {
-      alert("Please extract colors from an image first in the Colors tab!");
+      await message(t("templates.previewError"), { title: t("templates.preview"), kind: "warning" });
       return;
     }
-    
-    setIsPreviewLoading(true);
-    setPreviewName(template.displayName);
+    const request = ++previewRequest.current;
     setPreviewContent(null);
-    
+    setIsPreviewLoading(true);
     try {
-      const result: string = await invoke("preview_template", {
-        templatePath: template.path,
-        context: schemeData
-      });
-      setPreviewContent(result);
-    } catch (err: any) {
-      console.error(err);
-      setPreviewContent(`Error generating preview:\n${err}`);
+      const result = await invoke<string>("preview_template", { templatePath: target?.inputPath ?? variant.template.path, context: schemeData });
+      if (request === previewRequest.current) setPreviewContent(result);
+    } catch (error) {
+      if (request === previewRequest.current) {
+        await message(t("templates.previewFailed", { error: String(error) }), { title: t("templates.preview"), kind: "error" });
+      }
     } finally {
-      setIsPreviewLoading(false);
+      if (request === previewRequest.current) setIsPreviewLoading(false);
     }
   };
 
-  const handleInstallClick = (template: TemplateInfo) => {
-    setInstallTemplate(template);
-    setOutputPath(template.defaultOutputPath || "");
-    setPostHook(template.defaultPostHook || "");
-  };
-
-  const submitInstall = async () => {
-    if (!installTemplate) return;
+  const install = async () => {
+    if (!variant || !target || !variant.template.installable) return;
+    const path = outputPath.trim();
+    if (!path) {
+      await message(t("templates.outputPathRequired"), { title: t("templates.installTemplate"), kind: "warning" });
+      return;
+    }
+    const approved = await confirm(t("templates.installConfirm", { name: variant.name, target: target.label, path }), {
+      title: t("templates.installTemplate"), kind: "warning"
+    });
+    if (!approved) return;
     setIsInstalling(true);
     try {
       await invoke("install_template", {
-        templatePath: installTemplate.path,
-        templateName: installTemplate.name,
-        outputPath: outputPath,
-        postHook: postHook
+        templatePath: target.inputPath,
+        templateName: pairKey(variant, target),
+        outputPath: path,
+        postHook
       });
-      alert(`Template ${installTemplate.displayName} installed successfully!`);
-      setInstallTemplate(null);
-      fetchInstalled();
-    } catch (err: any) {
-      alert(`Error installing template:\n${err}`);
+      await fetchInstalled();
+      await message(t("templates.installedSuccess", { name: variant.name }), { title: t("templates.installTemplate"), kind: "info" });
+    } catch (error) {
+      await message(t("templates.installError", { error: String(error) }), { title: t("templates.installTemplate"), kind: "error" });
     } finally {
       setIsInstalling(false);
     }
   };
 
-  const handleUninstall = async (template: TemplateInfo) => {
-    if (confirm(t('templates.removeConfirm', { name: template.displayName }))) {
-      try {
-        await invoke("uninstall_template", { templateName: template.name });
-        fetchInstalled();
-      } catch (e: any) {
-        alert("Failed to uninstall: " + e);
-      }
+  const uninstall = async () => {
+    if (!variant || !target) return;
+    const name = installedName(variant, target);
+    if (!name) return;
+    const approved = await confirm(t("templates.removeConfirm", { name: `${variant.name} — ${target.label}` }), {
+      title: t("templates.remove"), kind: "warning"
+    });
+    if (!approved) return;
+    setIsInstalling(true);
+    try {
+      await invoke("uninstall_template", { templateName: name });
+      await fetchInstalled();
+    } catch (error) {
+      await message(t("templates.uninstallError", { error: String(error) }), { title: t("templates.remove"), kind: "error" });
+    } finally {
+      setIsInstalling(false);
     }
   };
 
-  const colorizeText = (text: string) => {
-    if (!text) return null;
-    const colorRegex = /(#[A-Fa-f0-9]{8}|#[A-Fa-f0-9]{6}|#[A-Fa-f0-9]{3}|rgba?\([^)]+\))/g;
-    const parts = text.split(colorRegex);
+  const automationLabel = (level: string) => level === "auto" ? t("templates.automation.auto") :
+    level === "config-patch" ? t("templates.automation.config") : t("templates.automation.manual");
 
-    return parts.map((part, i) => {
-      if (part.match(colorRegex)) {
-        let isLight = false;
-        if (part.startsWith('#')) {
-          let hex = part.replace('#', '');
-          if (hex.length === 3) hex = hex.split('').map(x => x+x).join('');
-          const r = parseInt(hex.substring(0, 2), 16);
-          const g = parseInt(hex.substring(2, 4), 16);
-          const b = parseInt(hex.substring(4, 6), 16);
-          const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          isLight = luma > 128;
-        }
-
-        return (
-          <span 
-            key={i} 
-            style={{ 
-              backgroundColor: part, 
-              color: isLight ? '#000' : '#fff', 
-              padding: '1px 4px', 
-              borderRadius: '4px',
-              border: '1px solid rgba(255,255,255,0.1)',
-              fontWeight: 'bold'
-            }}
-          >
-            {part}
-          </span>
-        );
-      }
-      return <span key={i}>{part}</span>;
-    });
-  };
-
-  return (
-    <div className="templates-page" style={{ padding: 24, display: 'flex', flexDirection: 'column', gap: 24, height: '100%', width: '100%' }}>
-      {previewName && (
-        <div className="modal-overlay" onClick={() => setPreviewName(null)}>
-          <div className="modal-content" style={{ width: '80%', maxWidth: 800, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>Preview: {previewName}</h3>
-              <X size={20} cursor="pointer" onClick={() => setPreviewName(null)} />
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', background: '#1e1e1e', padding: 16, borderRadius: 8, marginTop: 16 }}>
-              {isPreviewLoading ? (
-                <p style={{ color: '#888' }}>Rendering template with current colors...</p>
-              ) : (
-                <pre style={{ margin: 0, color: '#d4d4d4', fontFamily: 'monospace', fontSize: 13, whiteSpace: 'pre-wrap' }}>
-                  {colorizeText(previewContent || '')}
-                </pre>
-              )}
-            </div>
-            <div className="modal-actions" style={{ marginTop: 16 }}>
-              <button className="btn btn-secondary" onClick={() => setPreviewName(null)}>Close</button>
-              <button className="btn btn-primary" disabled={isPreviewLoading}>Install Template</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {installTemplate && (
-        <div className="modal-overlay" onClick={() => setInstallTemplate(null)}>
-          <div className="modal-content" style={{ width: '90%', maxWidth: 500, display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>{t('templates.installTitle', { name: installTemplate.displayName })}</h3>
-              <X size={20} cursor="pointer" onClick={() => setInstallTemplate(null)} />
-            </div>
-            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-                {t('templates.installDesc', { path: installTemplate.relativePath })}
-              </p>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <span className="template-badge">{installTemplate.category}</span>
-                <span className="template-badge" style={{ color: automationColor(installTemplate.automationLevel), borderColor: automationColor(installTemplate.automationLevel) }}>
-                  {automationLabel(installTemplate.automationLevel)}
-                </span>
-                {installTemplate.requiredCommands.map(cmd => (
-                  <span key={cmd} className="template-badge">{t('templates.needs', { cmd })}</span>
-                ))}
-              </div>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.outputPath')}</label>
-                <input 
-                  type="text" 
-                  value={outputPath}
-                  onChange={(e) => setOutputPath(e.target.value)}
-                  placeholder="~/.config/alacritty/colors.toml"
-                  style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-hover)', color: 'var(--text-primary)' }}
-                />
-              </div>
-
-              {installTemplate.relativePath.endsWith("midnight-discord.css") && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8, padding: 12, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12 }}>
-                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.selectDiscordClient')}</label>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {discordClients.map((client, idx) => (
-                      <button
-                        key={idx}
-                        className="btn btn-compact"
-                        style={{ 
-                          flex: 1, 
-                          background: outputPath.includes(client.path.replace('~/', '')) ? 'var(--accent)' : 'var(--surface-hover)',
-                          color: outputPath.includes(client.path.replace('~/', '')) ? 'var(--on-accent)' : (client.exists ? '#4ade80' : '#f87171'),
-                          border: `1px solid ${client.exists ? '#4ade80' : '#f87171'}`
-                        }}
-                        onClick={() => setOutputPath(`${client.path}/themes/matugen.css`)}
-                      >
-                        {client.name}
-                      </button>
-                    ))}
-                  </div>
-                  <span style={{ fontSize: 11, color: 'var(--text-secondary)', textAlign: 'center' }}>
-                    {t('templates.discordHelp')}
-                  </span>
-                </div>
-              )}
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.postHook')}</label>
-                <input 
-                  type="text" 
-                  value={postHook}
-                  onChange={(e) => setPostHook(e.target.value)}
-                  placeholder="e.g. killall -SIGUSR1 alacritty"
-                  style={{ padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface-hover)', color: 'var(--text-primary)' }}
-                />
-              </div>
-
-              {installTemplate.manualSteps.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.035)' }}>
-                  <label style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{t('templates.manualStepsNeeded')}</label>
-                  {installTemplate.manualSteps.map((step, idx) => (
-                    <span key={idx} style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.4 }}>{idx + 1}. {t(step, { defaultValue: step })}</span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="modal-actions" style={{ marginTop: 24 }}>
-              <button className="btn btn-secondary" onClick={() => setInstallTemplate(null)}>{t('templates.cancel')}</button>
-              <button className="btn btn-primary" disabled={isInstalling} onClick={submitInstall}>
-                {isInstalling ? t('templates.installing') : t('templates.install')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <h2>{t('templates.title')}</h2>
-          <p style={{ color: 'var(--text-secondary)' }}>{t('templates.subtitle')}</p>
-        </div>
-        
-        <div style={{ position: 'relative' }}>
-          <Search size={18} style={{ position: 'absolute', left: 12, top: 10, color: 'var(--text-secondary)' }} />
-          <input 
-            type="text" 
-            placeholder={t('templates.searchPlaceholder')}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ 
-              padding: '10px 10px 10px 40px', 
-              borderRadius: 12, 
-              border: '1px solid var(--border)', 
-              background: 'var(--surface-hover)',
-              color: 'var(--text-primary)',
-              outline: 'none',
-              width: 250
-            }} 
-          />
-        </div>
+  return <div className="templates-page page-transition">
+    <PageHeader title={t("templates.title")} description={t("templates.subtitle")} />
+    <div className="template-filters">
+      <div className="template-search">
+        <Search size={18} aria-hidden="true" />
+        <input type="search" aria-label={t("templates.searchPlaceholder")} placeholder={t("templates.searchPlaceholder")} value={search} onChange={event => setSearch(event.target.value)} />
       </div>
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {categories.map(category => (
-          <button
-            key={category}
-            className={`btn btn-compact ${activeCategory === category ? 'btn-primary' : 'btn-secondary'}`}
-            onClick={() => setActiveCategory(category)}
-          >
-            {category}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16, overflowY: 'auto' }}>
-        {isLoading ? (
-          <p>{t('templates.loading')}</p>
-        ) : filteredTemplates.length === 0 ? (
-          <p>{t('templates.noTemplates')}</p>
-        ) : (
-          filteredTemplates.map((template, idx) => (
-            <div key={idx} className="template-card" style={{
-              background: 'var(--surface)',
-              borderRadius: 16,
-              padding: 20,
-              border: '1px solid var(--border)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 16,
-              cursor: 'pointer',
-              transition: 'all 0.2s'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ background: 'var(--accent-transparent)', padding: 12, borderRadius: 12, color: 'var(--accent)' }}>
-                  <LayoutTemplate size={24} />
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <h3 style={{ fontSize: 16, margin: 0 }}>{template.displayName}</h3>
-                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {template.targetApp} • {(template.size / 1024).toFixed(1)} KB
-                  </span>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <span className="template-badge">{template.category}</span>
-                <span className="template-badge" style={{ color: automationColor(template.automationLevel), borderColor: automationColor(template.automationLevel) }}>
-                  {automationLabel(template.automationLevel)}
-                </span>
-                {!template.installable && <span className="template-badge">{t('templates.asset')}</span>}
-              </div>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {template.relativePath}
-              </span>
-              <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
-                <button className="btn btn-secondary btn-compact" style={{ flex: 1 }} onClick={() => handlePreview(template)}>{t('templates.preview')}</button>
-                {installedTemplates.has(installedKey(template.name)) ? (
-                  <button className="btn btn-danger btn-compact" style={{ flex: 1 }} onClick={() => handleUninstall(template)}>{t('templates.remove')}</button>
-                ) : (
-                  <button className="btn btn-primary btn-compact" style={{ flex: 1 }} disabled={!template.installable} onClick={() => handleInstallClick(template)}>
-                    {template.installable ? t('templates.install') : t('templates.guide')}
-                  </button>
-                )}
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+      <Select label={t("templates.category")} value={category} onValueChange={setCategory}
+        options={categories.map(value => ({ value, label: value === "all" ? t("templates.allCategories") : categoryLabel(value) }))} />
+      <Select label={t("templates.sourceFilter")} value={source} onValueChange={setSource}
+        options={["all", "official", "community"].map(value => ({ value, label: t(`templates.sources.${value}`) }))} />
     </div>
-  );
+
+    <div className="collection-grid">
+      {isLoading ? <p>{t("templates.loading")}</p> : filtered.length === 0 ?
+        <div className="collection-empty"><LayoutTemplate size={28} aria-hidden="true" />
+          <strong>{t("templates.noTemplates")}</strong>
+          {source === "community" && !catalog.some(app =>
+            (category === "all" || app.category === category) && app.variants.some(item => item.source.kind === "community")
+          ) && <p>{t("templates.communityUnavailable")}</p>}
+        </div> : filtered.map(app => {
+          const variants = variantsFor(app);
+          const installedCount = variants.reduce((count, item) => count + item.targets.filter(destination => !!installedName(item, destination)).length, 0);
+          return <article key={app.id} className="template-card app-template-card">
+            <div className="template-card-heading"><span className="template-card-icon"><LayoutTemplate size={24} aria-hidden="true" /></span>
+              <div><h3>{app.name}</h3><span>{categoryLabel(app.category)}</span></div>
+            </div>
+            <div className="template-card-summary">
+              <span className="template-badge">{t("templates.variantCount", { count: variants.length })}</span>
+              <span className="template-badge">{t("templates.installedCount", { count: installedCount })}</span>
+            </div>
+            <p className="template-card-variants">{variants.map(item => item.name).join(" · ")}{variants.some(item => item.source.kind === "community") && <> · <span className="template-card-community">{t("templates.sources.community")}</span></>}</p>
+            <button type="button" className="btn btn-secondary btn-compact template-card-action"
+              onClick={event => openDetail(app, event.currentTarget)}>{t("templates.details")}</button>
+          </article>;
+        })}
+    </div>
+
+    {selectedApp && variant && <div className="modal-overlay" onClick={closeDetail}>
+      <div className="modal-content templates-dialog" role="dialog" aria-modal="true" aria-label={selectedApp.name}
+        ref={detailDialog} tabIndex={-1} onClick={event => event.stopPropagation()}>
+        <div className="modal-header"><div><h3>{selectedApp.name}</h3><span className="template-badge">{categoryLabel(selectedApp.category)}</span></div>
+          <button type="button" className="btn btn-ghost icon-btn" aria-label={t("templates.close")} onClick={closeDetail}><X size={20} /></button>
+        </div>
+        <div className="modal-body template-detail-body">
+          <div className="template-detail-fields">
+            <label>{t("templates.variant")}
+              <Select label={t("templates.variant")} value={variant.id} onValueChange={id => {
+                const next = selectedVariants.find(item => item.id === id);
+                if (next) chooseVariant(next);
+              }} options={selectedVariants.map(item => ({ value: item.id, label: item.name }))} />
+            </label>
+            {variant.description && <p>{variantDescriptionKeys[variant.id] ?
+              t(variantDescriptionKeys[variant.id], { defaultValue: variant.description }) : variant.description}</p>}
+            <div className="template-card-summary">
+              <span className={`template-badge automation-${variant.template.automationLevel}`}>{automationLabel(variant.template.automationLevel)}</span>
+              {!variant.template.installable && <span className="template-badge">{t("templates.asset")}</span>}
+              {variant.template.requiredCommands.map(command => <span key={command} className="template-badge">{t("templates.needs", { cmd: command })}</span>)}
+            </div>
+          </div>
+          <section className="template-source" aria-label={t("templates.sourceDetails")}>
+            <strong>{t("templates.sourceDetails")}: {variant.source.name}</strong>
+            <span>{t(`templates.sources.${variant.source.kind}`)}{variant.source.author ? ` · ${variant.source.author}` : ""}</span>
+            {variant.source.license && <span>{t("templates.license")}: {variant.source.license}</span>}
+            {variant.source.licenseStatus && <span>{t("templates.licenseStatus")}: {t(`templates.licenseStatuses.${variant.source.licenseStatus}`, { defaultValue: variant.source.licenseStatus })}</span>}
+            {variant.source.attribution && <span>{t(`templates.variantAttributions.${variant.id.replace(/[^A-Za-z0-9]/g, "_")}`, { defaultValue: variant.source.attribution })}</span>}
+            {variant.source.version && <span>{t("templates.version")}: {variant.source.version}</span>}
+            {variant.source.upstreamCommit && <span>{t("templates.commit")}: {variant.source.upstreamCommit}</span>}
+            {variant.source.sourcePath && <span className="template-path">{variant.source.sourcePath}</span>}
+            {variant.source.repository && <a href={variant.source.repository} target="_blank" rel="noopener noreferrer">{t("templates.repository")}</a>}
+          </section>
+          <div className="template-detail-fields">
+            <label>{t("templates.target")}
+              <Select label={t("templates.target")} value={targetId} onValueChange={chooseTarget}
+                options={variant.targets.map(item => ({ value: item.id, label: item.label }))} />
+            </label>
+            {target && <>
+              <span className={`template-detection ${target.detected ? "is-detected" : ""}`}>
+                {target.detected ? t("templates.detected") : t("templates.notDetected")}
+                {` · ${t(`templates.installTypes.${target.installType}`)}`}
+              </span>
+              <label htmlFor="template-output-path">{t("templates.outputPath")}</label>
+              <input id="template-output-path" type="text" value={outputPath} onChange={event => setOutputPath(event.target.value)}
+                aria-invalid={!outputPath.trim()} placeholder={target.outputPath} />
+              {!outputPath.trim() && <span className="template-field-error">{t("templates.outputPathRequired")}</span>}
+            </>}
+            <label htmlFor="template-post-hook">{t("templates.postHook")}</label>
+            <input id="template-post-hook" type="text" value={postHook} onChange={event => setPostHook(event.target.value)} />
+          </div>
+          {variant.template.manualSteps.length > 0 && <section className="template-manual-steps">
+            <strong>{t("templates.manualStepsNeeded")}</strong>
+            <ol>{variant.template.manualSteps.map((step, index) => <li key={index}>{t(step, { defaultValue: step })}</li>)}</ol>
+          </section>}
+          {(isPreviewLoading || previewContent !== null) && <section className="template-preview" aria-label={t("templates.previewTitle", { name: variant.name })}>
+            {isPreviewLoading ? <p>{t("templates.rendering")}</p> : <pre>{colorizeText(previewContent ?? "")}</pre>}
+          </section>}
+        </div>
+        <div className="modal-actions template-detail-actions">
+          <button type="button" className="btn btn-secondary" onClick={closeDetail} disabled={isInstalling}>{t("templates.close")}</button>
+          <button type="button" className="btn btn-secondary" onClick={preview} disabled={isPreviewLoading}>{t("templates.preview")}</button>
+          {target && (installedName(variant, target) ?
+            <button type="button" className="btn btn-danger" onClick={uninstall} disabled={isInstalling}>{t("templates.remove")}</button> :
+            <button type="button" className="btn btn-primary" onClick={install} disabled={isInstalling || !variant.template.installable || !outputPath.trim()}>
+              {isInstalling ? t("templates.installing") : variant.template.installable ? t("templates.install") : t("templates.guide")}
+            </button>)}
+        </div>
+      </div>
+    </div>}
+  </div>;
 }

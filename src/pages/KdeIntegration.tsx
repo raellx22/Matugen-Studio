@@ -15,9 +15,16 @@ import {
   Square,
 } from "lucide-react";
 
+import DecorationIntegrations from "./DecorationIntegrations";
+import Select from "../components/Select";
+import { Switch } from "../components/Primitives";
+import type { KdeIntegrationSettings } from "../utils/studioSettings";
+
 type ThemeContext = Record<string, unknown>;
 
 interface KdeIntegrationProps {
+  integrationSettings: KdeIntegrationSettings;
+  onIntegrationSettingsChange: (settings: KdeIntegrationSettings) => Promise<void>;
   schemeData: ThemeContext | null;
   themeContext: ThemeContext | null;
   wallpaperPath: string | null;
@@ -52,6 +59,8 @@ interface GtkThemeResult {
 }
 
 export default function KdeIntegration({
+  integrationSettings,
+  onIntegrationSettingsChange,
   schemeData,
   themeContext,
   schemeType,
@@ -266,35 +275,11 @@ export default function KdeIntegration({
       </div>
 
       <div className="desktop-grid">
-        <section className="card desktop-card">
-          <div className="desktop-card-title">
-            <Monitor size={20} />
-            <h3>{t('desktop.currentKdeWallpaper')}</h3>
-            <button className="btn btn-secondary btn-compact" onClick={fetchCurrentWallpaper}>
-              <RefreshCw size={14} /> {t('desktop.refresh')}
-            </button>
-          </div>
-
-          {currentKdeWallpaper ? (
-            <div className="desktop-path">{currentKdeWallpaper}</div>
-          ) : (
-            <div className="desktop-warning">
-              <AlertCircle size={14} />
-              {t('desktop.noWallpaperDetected')}
-            </div>
-          )}
-
-          <button
-            className="btn btn-primary"
-            disabled={!currentKdeWallpaper || isApplyingScheme}
-            onClick={generateAndApply}
-          >
-            {isApplyingScheme ? <Loader2 size={16} className="spinning" /> : <Palette size={16} />}
-            {t('desktop.generateFromCurrent')}
-          </button>
-        </section>
-
-        <section className="card desktop-card">
+        <div className="desktop-domain">
+          <DecorationIntegrations settings={integrationSettings} onChange={onIntegrationSettingsChange} />
+        </div>
+        <div className="desktop-domain"><h3>{t('desktop.kdeColorScheme')} / {t('desktop.gtkTheme')}</h3>
+<section className="card desktop-card">
           <div className="desktop-card-title">
             <Palette size={20} />
             <h3>{t('desktop.kdeColorScheme')}</h3>
@@ -313,50 +298,7 @@ export default function KdeIntegration({
             {schemeApplied ? t('desktop.applied') : t('desktop.applyKdeScheme')}
           </button>
         </section>
-
-        <section className="card desktop-card">
-          <div className="desktop-card-title">
-            {serviceEnabled ? <Eye size={20} /> : <EyeOff size={20} />}
-            <h3>{t('desktop.watcherService')}</h3>
-          </div>
-          <p className="desktop-card-copy">
-            {t('desktop.watcherDesc')}
-          </p>
-          <div className="desktop-inline-controls">
-            <button className={`btn ${serviceEnabled ? "btn-secondary" : "btn-primary"}`} onClick={toggleService}>
-              {serviceEnabled ? <Square size={16} /> : serviceProcessing ? <Loader2 size={16} className="spinning" /> : <Play size={16} />}
-              {serviceEnabled ? t('desktop.stopService') : t('desktop.startService')}
-            </button>
-            <select value={pollInterval} onChange={(e) => setPollInterval(parseInt(e.target.value))}>
-              <option value={5}>{t('desktop.seconds_5')}</option>
-              <option value={10}>{t('desktop.seconds_10')}</option>
-              <option value={30}>{t('desktop.seconds_30')}</option>
-              <option value={60}>{t('desktop.minute_1')}</option>
-            </select>
-          </div>
-
-          <label className="desktop-toggle">
-            <input
-              type="checkbox"
-              checked={runInBackground}
-              onChange={(event) => toggleRunInBackground(event.target.checked)}
-            />
-            <span>{t('desktop.runInBackground')}</span>
-          </label>
-          <p className="desktop-card-copy">
-            {t('desktop.runInBackgroundDesc')}
-          </p>
-
-          {statusMessage && (
-            <div className={`desktop-status ${serviceError ? "is-error" : serviceEnabled ? "is-on" : ""}`}>
-              {serviceEnabled && !serviceError && <span className="pulse-dot" />}
-              {statusMessage}
-            </div>
-          )}
-          {serviceError && <div className="desktop-error">{serviceError}</div>}
-        </section>
-
-        <section className="card desktop-card">
+<section className="card desktop-card">
           <div className="desktop-card-title">
             <Palette size={20} />
             <h3>{t('desktop.gtkTheme')}</h3>
@@ -365,14 +307,7 @@ export default function KdeIntegration({
             {t('desktop.gtkDesc')}
           </p>
 
-          <label className="desktop-toggle">
-            <input
-              type="checkbox"
-              checked={gtkThemeEnabled}
-              onChange={(event) => onGtkThemeEnabledChange(event.target.checked)}
-            />
-            <span>{t('desktop.applyGtkAuto')}</span>
-          </label>
+          <div className="desktop-toggle"><Switch label={t('desktop.applyGtkAuto')} checked={gtkThemeEnabled} onChange={onGtkThemeEnabledChange} /><span>{t('desktop.applyGtkAuto')}</span></div>
 
           <div className="desktop-segment">
             <button
@@ -402,6 +337,66 @@ export default function KdeIntegration({
 
           {gtkAppliedTheme && <div className="desktop-status is-on">{t('desktop.gtkApplied', { name: gtkAppliedTheme })}</div>}
         </section>
+        </div>
+        <div className="desktop-domain"><h3>{t('desktop.currentKdeWallpaper')} / {t('desktop.watcherService')}</h3>
+<section className="card desktop-card">
+          <div className="desktop-card-title">
+            <Monitor size={20} />
+            <h3>{t('desktop.currentKdeWallpaper')}</h3>
+            <button className="btn btn-secondary btn-compact" onClick={fetchCurrentWallpaper}>
+              <RefreshCw size={14} /> {t('desktop.refresh')}
+            </button>
+          </div>
+
+          {currentKdeWallpaper ? (
+            <div className="desktop-path">{currentKdeWallpaper}</div>
+          ) : (
+            <div className="desktop-warning">
+              <AlertCircle size={14} />
+              {t('desktop.noWallpaperDetected')}
+            </div>
+          )}
+
+          <button
+            className="btn btn-primary"
+            disabled={!currentKdeWallpaper || isApplyingScheme}
+            onClick={generateAndApply}
+          >
+            {isApplyingScheme ? <Loader2 size={16} className="spinning" /> : <Palette size={16} />}
+            {t('desktop.generateFromCurrent')}
+          </button>
+        </section>
+<section className="card desktop-card">
+          <div className="desktop-card-title">
+            {serviceEnabled ? <Eye size={20} /> : <EyeOff size={20} />}
+            <h3>{t('desktop.watcherService')}</h3>
+          </div>
+          <p className="desktop-card-copy">
+            {t('desktop.watcherDesc')}
+          </p>
+          <div className="desktop-inline-controls">
+            <button className={`btn ${serviceEnabled ? "btn-secondary" : "btn-primary"}`} onClick={toggleService}>
+              {serviceEnabled ? <Square size={16} /> : serviceProcessing ? <Loader2 size={16} className="spinning" /> : <Play size={16} />}
+              {serviceEnabled ? t('desktop.stopService') : t('desktop.startService')}
+            </button>
+            <Select label={t('desktop.watcherService')} value={String(pollInterval)} onValueChange={value => setPollInterval(Number(value))}
+              options={[5, 10, 30, 60].map((value, index) => ({ value: String(value), label: t(['desktop.seconds_5','desktop.seconds_10','desktop.seconds_30','desktop.minute_1'][index]) }))} />
+          </div>
+
+          <div className="desktop-toggle"><Switch label={t('desktop.runInBackground')} checked={runInBackground} onChange={value => void toggleRunInBackground(value)} /><span>{t('desktop.runInBackground')}</span></div>
+          <p className="desktop-card-copy">
+            {t('desktop.runInBackgroundDesc')}
+          </p>
+
+          {statusMessage && (
+            <div className={`desktop-status ${serviceError ? "is-error" : serviceEnabled ? "is-on" : ""}`}>
+              {serviceEnabled && !serviceError && <span className="pulse-dot" />}
+              {statusMessage}
+            </div>
+          )}
+          {serviceError && <div className="desktop-error">{serviceError}</div>}
+        </section>
+        </div>
       </div>
     </div>
   );

@@ -1,0 +1,82 @@
+/**
+ * @name Matugen Material You
+ * @author Matugen Studio contributors
+ * @description Matugen color roles for Material Discord and its Material You add-on.
+ * @version 1.0
+ *
+ * Original role mapping by Matugen Studio contributors (GPL-2.0-or-later).
+ * Requires CapnKitten's Material Discord and Material You add-on at runtime.
+ * Their stylesheets are NOT bundled: without network access, a first-time load
+ * cannot fetch them (a previously cached copy may still work).
+ * Select this theme inside the Discord client after installing it.
+ */
+@import url("https://capnkitten.github.io/BetterDiscord/Themes/Material-Discord/css/source.css");
+@import url("https://capnkitten.github.io/BetterDiscord/Themes/Material-Discord/css/addons/material-you/source.css");
+
+.theme-dark {
+  --accent-hue: {{ colors.primary.dark.hue }};
+  --accent-saturation: {{ colors.primary.dark.saturation }}%;
+  --accent-lightness: {{ colors.primary.dark.lightness }}%;
+  --accent-text-color: {{ colors.on_primary.dark.hex }};
+  --main-color: {{ colors.surface.dark.hex }};
+  --main-alt: {{ colors.surface_container_low.dark.hex }};
+  --app-bg: {{ colors.surface.dark.hex }};
+  --server-color: {{ colors.surface_container_low.dark.hex }};
+  --status-picker-color: {{ colors.surface_container.dark.hex }};
+  --sidebar-panel-color: {{ colors.surface_container.dark.hex }};
+  --chat-color: {{ colors.surface.dark.hex }};
+  --message-color: {{ colors.surface_container.dark.hex }};
+  --message-color-hover: {{ colors.surface_container_high.dark.hex }};
+  --message-color-alt: {{ colors.surface_container_low.dark.hex }};
+  --attachment-color: {{ colors.surface_container.dark.hex }};
+  --main-textarea-color: {{ colors.surface_container_high.dark.hex }};
+  --main-textarea-color-alt: {{ colors.surface_container.dark.hex }};
+  --main-textarea-border: {{ colors.outline_variant.dark.hex }};
+  --popout-color: {{ colors.surface_container.dark.hex }};
+  --popout-color-alt: {{ colors.surface_container_low.dark.hex }};
+  --card-color-filled: {{ colors.surface_container.dark.hex }};
+  --card-color-hover: {{ colors.surface_container_high.dark.hex }};
+  --card-color-active: {{ colors.secondary_container.dark.hex }};
+  --card-border-color: {{ colors.outline_variant.dark.hex }};
+  --card-header-text-color: {{ colors.on_surface.dark.hex }};
+  --tooltip-color: {{ colors.inverse_surface.dark.hex }};
+  --tooltip-text-color: {{ colors.inverse_on_surface.dark.hex }};
+  --input-color: {{ colors.surface_container_high.dark.hex }};
+  --input-text-color: {{ colors.on_surface.dark.hex }};
+  --input-placeholder-color: {{ colors.on_surface_variant.dark.hex }};
+  --separator-color: {{ colors.outline_variant.dark.hex }};
+}
+
+.theme-light {
+  --accent-hue: {{ colors.primary.light.hue }};
+  --accent-saturation: {{ colors.primary.light.saturation }}%;
+  --accent-lightness: {{ colors.primary.light.lightness }}%;
+  --accent-text-color: {{ colors.on_primary.light.hex }};
+  --main-color: {{ colors.surface.light.hex }};
+  --main-alt: {{ colors.surface_container_low.light.hex }};
+  --app-bg: {{ colors.surface.light.hex }};
+  --server-color: {{ colors.surface_container_low.light.hex }};
+  --status-picker-color: {{ colors.surface_container.light.hex }};
+  --sidebar-panel-color: {{ colors.surface_container.light.hex }};
+  --chat-color: {{ colors.surface.light.hex }};
+  --message-color: {{ colors.surface_container.light.hex }};
+  --message-color-hover: {{ colors.surface_container_high.light.hex }};
+  --message-color-alt: {{ colors.surface_container_low.light.hex }};
+  --attachment-color: {{ colors.surface_container.light.hex }};
+  --main-textarea-color: {{ colors.surface_container_high.light.hex }};
+  --main-textarea-color-alt: {{ colors.surface_container.light.hex }};
+  --main-textarea-border: {{ colors.outline_variant.light.hex }};
+  --popout-color: {{ colors.surface_container.light.hex }};
+  --popout-color-alt: {{ colors.surface_container_low.light.hex }};
+  --card-color-filled: {{ colors.surface_container.light.hex }};
+  --card-color-hover: {{ colors.surface_container_high.light.hex }};
+  --card-color-active: {{ colors.secondary_container.light.hex }};
+  --card-border-color: {{ colors.outline_variant.light.hex }};
+  --card-header-text-color: {{ colors.on_surface.light.hex }};
+  --tooltip-color: {{ colors.inverse_surface.light.hex }};
+  --tooltip-text-color: {{ colors.inverse_on_surface.light.hex }};
+  --input-color: {{ colors.surface_container_high.light.hex }};
+  --input-text-color: {{ colors.on_surface.light.hex }};
+  --input-placeholder-color: {{ colors.on_surface_variant.light.hex }};
+  --separator-color: {{ colors.outline_variant.light.hex }};
+}
